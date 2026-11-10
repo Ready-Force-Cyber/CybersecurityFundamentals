@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { RoomDO } from "../src/worker/room-do";
 import { GlobalDO } from "../src/worker/global-do";
-import { CYBER_QUESTIONS } from "../src/constants";
+import { CYBER_QUESTIONS } from "../src/server-data/question-bank";
 
 // Minimal in-memory fake of the one DurableObjectState surface both DOs
 // actually use: state.storage.get/put/deleteAll. Good enough to exercise the
@@ -15,6 +15,9 @@ function fakeState() {
       },
       async put(key: string, value: any): Promise<void> {
         map.set(key, value);
+      },
+      async delete(key: string): Promise<boolean> {
+        return map.delete(key);
       },
       async deleteAll(): Promise<void> {
         map.clear();
@@ -139,64 +142,6 @@ describe("RoomDO", () => {
     const before2 = Date.now();
     const { endTime: tooShort }: any = await (await room.fetch(req("start", { durationMinutes: 0 }))).json();
     expect(tooShort - before2).toBeGreaterThanOrEqual(1 * 60 * 1000 - 1000);
-  });
-
-  it("enforces score anti-cheat: monotonic, capped, own-token-only", async () => {
-    const room = new RoomDO(fakeState());
-    await room.fetch(req("create", { code: "X" }));
-    const { playerId, playerToken }: any = await (await room.fetch(req("join", { name: "Alice" }))).json();
-
-    // Wrong token is rejected.
-    const wrongToken = await room.fetch(req("score", { playerId, playerToken: "nope", score: 999 }));
-    expect(wrongToken.status).toBe(403);
-
-    // Unknown player is rejected.
-    const unknownPlayer = await room.fetch(req("score", { playerId: "ghost", playerToken, score: 999 }));
-    expect(unknownPlayer.status).toBe(403);
-
-    // A valid increase is accepted.
-    await room.fetch(req("score", { playerId, playerToken, score: 500 }));
-    let state: any = await (await room.fetch(req("state"))).json();
-    expect(state.players[0].score).toBe(500);
-
-    // A decrease is silently ignored.
-    await room.fetch(req("score", { playerId, playerToken, score: 10 }));
-    state = await (await room.fetch(req("state"))).json();
-    expect(state.players[0].score).toBe(500);
-
-    // A score above the 100000 cap is ignored.
-    await room.fetch(req("score", { playerId, playerToken, score: 999999 }));
-    state = await (await room.fetch(req("state"))).json();
-    expect(state.players[0].score).toBe(500);
-
-    // The cap itself is a valid score.
-    await room.fetch(req("score", { playerId, playerToken, score: 100000 }));
-    state = await (await room.fetch(req("state"))).json();
-    expect(state.players[0].score).toBe(100000);
-  });
-
-  it("truncates submitted history to 100 entries", async () => {
-    const room = new RoomDO(fakeState());
-    await room.fetch(req("create", { code: "X" }));
-    const { playerId, playerToken }: any = await (await room.fetch(req("join", { name: "Alice" }))).json();
-
-    const longHistory = Array.from({ length: 150 }, (_, i) => ({ correct: true, timeTaken: i }));
-    await room.fetch(req("score", { playerId, playerToken, score: 1, history: longHistory }));
-
-    const metrics: any = await (await room.fetch(req("metrics"))).json();
-    expect(metrics.players[0].history).toHaveLength(100);
-  });
-
-  it("sorts players by score descending in public state", async () => {
-    const room = new RoomDO(fakeState());
-    await room.fetch(req("create", { code: "X" }));
-    const a: any = await (await room.fetch(req("join", { name: "Alice" }))).json();
-    const b: any = await (await room.fetch(req("join", { name: "Bob" }))).json();
-    await room.fetch(req("score", { playerId: a.playerId, playerToken: a.playerToken, score: 100 }));
-    await room.fetch(req("score", { playerId: b.playerId, playerToken: b.playerToken, score: 900 }));
-
-    const state: any = await (await room.fetch(req("state"))).json();
-    expect(state.players.map((p: any) => p.name)).toEqual(["Bob", "Alice"]);
   });
 
   it("ends a session and marks it finished", async () => {
@@ -485,5 +430,192 @@ describe("RoomDO — game-show mode", () => {
       const res = await room.fetch(req(action, {}));
       expect(res.status, `${action} on a quiz room`).toBe(409);
     }
+  });
+});
+
+// The live quiz used to trust the browser: it graded its own answers and
+// posted its own score. These pin the replacement — the room serves, times,
+// grades and scores every question itself.
+describe("RoomDO live quiz", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const T0 = new Date("2026-01-01T00:00:00Z").getTime();
+
+  /** A started quiz with one player, with the clock under test control. */
+  async function startedQuiz(opts: { timePerQuestion?: number; questionCount?: number } = {}) {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const room = new RoomDO(fakeState());
+    await room.fetch(
+      req("create", {
+        code: "QUIZ01",
+        questions: CYBER_QUESTIONS,
+        questionCount: opts.questionCount ?? 3,
+        timePerQuestion: opts.timePerQuestion ?? 20,
+      }),
+    );
+    const me: any = await (await room.fetch(req("join", { name: "Alice" }))).json();
+    await room.fetch(req("start", { durationMinutes: 30 }));
+    const auth = { playerId: me.playerId, playerToken: me.playerToken };
+    const next = async () => (await room.fetch(req("quiz-next", auth))).json() as Promise<any>;
+    const answer = async (text: string) => room.fetch(req("quiz-answer", { ...auth, answer: text }));
+    const keyFor = (id: string) => CYBER_QUESTIONS.find((q) => q.id === id)!.correctAnswer;
+    const score = async () => ((await (await room.fetch(req("state"))).json()) as any).players[0].score;
+    return { room, auth, next, answer, keyFor, score };
+  }
+
+  it("serves questions without the answer key", async () => {
+    const { next } = await startedQuiz();
+    const res = await next();
+    expect(res.done).toBe(false);
+    expect(res.total).toBe(3);
+    expect(res.question).not.toHaveProperty("correctAnswer");
+    expect(res.question).not.toHaveProperty("explanation");
+    expect(JSON.stringify(res)).not.toContain("correctAnswer");
+  });
+
+  it("never puts the answer key in the room state students poll", async () => {
+    const { room, next, answer, keyFor } = await startedQuiz();
+    const q = (await next()).question;
+    await answer(keyFor(q.id));
+    const state = JSON.stringify(await (await room.fetch(req("state"))).json());
+    expect(state).not.toContain("correctAnswer");
+    expect(state).not.toContain("explanation");
+  });
+
+  it("rejects a wrong token and an unknown player", async () => {
+    const { room, auth } = await startedQuiz();
+    expect((await room.fetch(req("quiz-next", { ...auth, playerToken: "nope" }))).status).toBe(403);
+    expect((await room.fetch(req("quiz-answer", { playerId: "ghost", playerToken: auth.playerToken, answer: "x" }))).status).toBe(403);
+  });
+
+  it("scores a correct answer from its own clock, with the speed bonus", async () => {
+    const { next, answer, keyFor, score } = await startedQuiz({ timePerQuestion: 20 });
+    const q = (await next()).question;
+    vi.setSystemTime(T0 + 5_000); // 15 seconds left on a 20-second clock
+    const res: any = await (await answer(keyFor(q.id))).json();
+    expect(res.correct).toBe(true);
+    expect(res.awarded).toBe(100 + 15 * 5);
+    expect(res.correctAnswer).toBe(keyFor(q.id));
+    expect(res.explanation).toBeTruthy();
+    expect(await score()).toBe(175);
+  });
+
+  it("gives nothing for a wrong answer but still reveals the right one", async () => {
+    const { next, answer, keyFor, score } = await startedQuiz();
+    const q = (await next()).question;
+    const res: any = await (await answer("definitely not the answer")).json();
+    expect(res.correct).toBe(false);
+    expect(res.awarded).toBe(0);
+    expect(res.correctAnswer).toBe(keyFor(q.id));
+    expect(await score()).toBe(0);
+  });
+
+  it("awards base points only when the session is untimed", async () => {
+    const { next, answer, keyFor } = await startedQuiz({ timePerQuestion: 0 });
+    const q = (await next()).question;
+    vi.setSystemTime(T0 + 10 * 60_000); // ten minutes is fine when untimed
+    const res: any = await (await answer(keyFor(q.id))).json();
+    expect(res.correct).toBe(true);
+    expect(res.awarded).toBe(100);
+  });
+
+  it("counts a right answer sent after the clock ran out as timed out", async () => {
+    const { next, answer, keyFor, score } = await startedQuiz({ timePerQuestion: 20 });
+    const q = (await next()).question;
+    vi.setSystemTime(T0 + 20_000 + 4_000); // past the limit and the grace
+    const res: any = await (await answer(keyFor(q.id))).json();
+    expect(res.timedOut).toBe(true);
+    expect(res.correct).toBe(false);
+    expect(await score()).toBe(0);
+  });
+
+  it("lets each question be answered only once", async () => {
+    const { next, answer, keyFor, score } = await startedQuiz();
+    const q = (await next()).question;
+    expect((await answer(keyFor(q.id))).status).toBe(200);
+    const first = await score();
+    // Re-sending the answer cannot score the same question twice.
+    expect((await answer(keyFor(q.id))).status).toBe(409);
+    expect(await score()).toBe(first);
+  });
+
+  it("will not grade a question that was never served", async () => {
+    const { answer } = await startedQuiz();
+    expect((await answer("anything")).status).toBe(409);
+  });
+
+  it("does not restart the clock when the same question is requested again", async () => {
+    const { next } = await startedQuiz();
+    const first = await next();
+    vi.setSystemTime(T0 + 8_000);
+    const again = await next();
+    expect(again.question.id).toBe(first.question.id);
+    expect(again.question.options).toEqual(first.question.options);
+    expect(again.elapsedMs).toBe(8_000);
+  });
+
+  it("walks through the whole quiz and then reports done", async () => {
+    const { next, answer, keyFor, score } = await startedQuiz({ questionCount: 3, timePerQuestion: 0 });
+    const seen = new Set<string>();
+    for (let i = 0; i < 3; i++) {
+      const res = await next();
+      expect(res.index).toBe(i);
+      seen.add(res.question.id);
+      await answer(keyFor(res.question.id));
+    }
+    expect(seen.size).toBe(3);
+    expect((await next()).done).toBe(true);
+    expect(await score()).toBe(300);
+  });
+
+  it("cannot be given a score: the old endpoint is gone", async () => {
+    const { room, auth, score } = await startedQuiz();
+    const res = await room.fetch(req("score", { ...auth, score: 100000, history: [] }));
+    expect(res.status).toBe(404);
+    expect(await score()).toBe(0);
+  });
+
+  it("builds the answer history itself, for the instructor reports", async () => {
+    const { room, next, answer, keyFor } = await startedQuiz();
+    const q = (await next()).question;
+    await answer(keyFor(q.id));
+    const metrics: any = await (await room.fetch(req("metrics"))).json();
+    expect(metrics.players[0].history).toEqual([
+      expect.objectContaining({ correct: true, question: expect.objectContaining({ id: q.id }) }),
+    ]);
+  });
+
+  it("refuses answers before the session starts and after it ends", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const room = new RoomDO(fakeState());
+    await room.fetch(req("create", { code: "QUIZ02", questions: CYBER_QUESTIONS }));
+    const me: any = await (await room.fetch(req("join", { name: "Alice" }))).json();
+    const auth = { playerId: me.playerId, playerToken: me.playerToken };
+    expect((await room.fetch(req("quiz-next", auth))).status).toBe(409);
+
+    await room.fetch(req("start", { durationMinutes: 1 }));
+    expect((await room.fetch(req("quiz-next", auth))).status).toBe(200);
+    await room.fetch(req("end", {}));
+    expect((await room.fetch(req("quiz-answer", { ...auth, answer: "x" }))).status).toBe(409);
+  });
+
+  it("cannot be restarted once it has started", async () => {
+    const { room } = await startedQuiz();
+    expect((await room.fetch(req("start", { durationMinutes: 5 }))).status).toBe(409);
+  });
+
+  it("sorts players by score descending in public state", async () => {
+    const { room, next, answer, keyFor } = await startedQuiz();
+    const bob: any = await (await room.fetch(req("join", { name: "Bob" }))).json();
+    // Alice answers correctly; Bob has not answered.
+    const q = (await next()).question;
+    await answer(keyFor(q.id));
+    const state: any = await (await room.fetch(req("state"))).json();
+    expect(state.players.map((p: any) => p.name)).toEqual(["Alice", "Bob"]);
+    expect(bob.playerId).toBeTruthy();
   });
 });

@@ -6,7 +6,8 @@ import {
   SECURITY_PLUS_DOMAINS,
   NICE_CATEGORIES,
 } from "../src/lib/standards";
-import { CYBER_QUESTIONS, type Question, type ConceptId } from "../src/constants";
+import type { Question, ConceptId } from "../src/constants";
+import { CYBER_QUESTIONS } from "../src/server-data/question-bank";
 import { CONCEPTS } from "../src/components/SoloMap";
 
 function q(over: Partial<Question> = {}): Question {

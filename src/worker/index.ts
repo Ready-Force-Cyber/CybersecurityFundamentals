@@ -8,6 +8,8 @@ import { RoomDO } from "./room-do";
 import { GlobalDO } from "./global-do";
 import { createToken, verifyToken, passwordMatches } from "./auth";
 import { computeMetrics } from "../lib/metrics";
+import { toPublicQuestion, revealAnswer } from "../lib/quiz";
+import type { Question } from "../constants";
 
 export interface Env {
   ASSETS: Fetcher;
@@ -25,7 +27,10 @@ function newCode(): string {
   return code;
 }
 
-const password = (env: Env) => env.APP_PASSWORD || "readyforce";
+// There is deliberately no built-in password. This repository is public, so
+// any default written here is known to everyone; with the APP_PASSWORD secret
+// unset, instructor sign-in is refused rather than falling back to one.
+const password = (env: Env): string | null => env.APP_PASSWORD || null;
 const globalStub = (env: Env) => env.GLOBAL.get(env.GLOBAL.idFromName("global"));
 const roomStub = (env: Env, code: string) => env.ROOMS.get(env.ROOMS.idFromName(code));
 
@@ -38,8 +43,10 @@ function callDO(stub: DurableObjectStub, action: string, body?: unknown): Promis
 }
 
 async function isInstructor(env: Env, authHeader: string | undefined): Promise<boolean> {
+  const secret = password(env);
+  if (!secret) return false;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "";
-  return verifyToken(password(env), token);
+  return verifyToken(secret, token);
 }
 
 // Proxy a Durable Object's JSON Response straight back to the client.
@@ -54,14 +61,51 @@ api.post("/auth/login", async (c) => {
     await callDO(globalStub(c.env), "rate", { key: `login:${ip}`, limit: 5, windowMs: 60_000 })
   ).json<{ limited: boolean }>();
   if (rl.limited) return c.json({ error: "Too many attempts. Try again later." }, 429);
+  const secret = password(c.env);
+  if (!secret) {
+    return c.json(
+      { error: "Instructor sign-in is not configured. Set the APP_PASSWORD secret on the Worker." },
+      503,
+    );
+  }
   const { password: pw } = await c.req.json().catch(() => ({}) as any);
-  if (typeof pw !== "string" || !(await passwordMatches(pw, password(c.env)))) {
+  if (typeof pw !== "string" || !(await passwordMatches(pw, secret))) {
     return c.json({ error: "Incorrect password." }, 401);
   }
-  return c.json({ token: await createToken(password(c.env)) });
+  return c.json({ token: await createToken(secret) });
 });
 
-api.get("/questions", async (c) => proxy(await callDO(globalStub(c.env), "questions:get")));
+/** The full bank, answers included. Never returned to a student as-is. */
+async function fullBank(env: Env): Promise<Question[]> {
+  const res = await callDO(globalStub(env), "questions:get");
+  return ((await res.json()) as { questions: Question[] }).questions ?? [];
+}
+
+// Students get the bank without its answer key and with options shuffled.
+// Only a signed-in instructor (who edits the bank) gets the full records.
+api.get("/questions", async (c) => {
+  const questions = await fullBank(c.env);
+  if (await isInstructor(c.env, c.req.header("Authorization"))) return c.json({ questions });
+  return c.json({ questions: questions.map((q) => toPublicQuestion(q)) });
+});
+
+// Grade one answer for solo practice. Nothing is recorded — solo play has no
+// score on the server — but it keeps the key out of the browser.
+api.post("/questions/check", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as any);
+  const question = (await fullBank(c.env)).find((q) => q.id === body.questionId);
+  if (!question) return c.json({ error: "Question not found." }, 404);
+  return c.json(revealAnswer(question, body.answer));
+});
+
+// Restore the built-in bank. The built-in questions live on the server only,
+// so the client can no longer send them back itself.
+api.post("/questions/reset", async (c) => {
+  if (!(await isInstructor(c.env, c.req.header("Authorization")))) {
+    return c.json({ error: "Instructor sign-in required." }, 401);
+  }
+  return proxy(await callDO(globalStub(c.env), "questions:reset", {}));
+});
 
 api.put("/questions", async (c) => {
   if (!(await isInstructor(c.env, c.req.header("Authorization")))) {
@@ -78,13 +122,9 @@ api.post("/session", async (c) => {
   const body = await c.req.json().catch(() => ({}) as any);
   const code = newCode();
 
-  // A game-show room grades answers itself, so hand it a snapshot of the
-  // question bank (which otherwise lives in GlobalDO) at creation time.
-  let questions: unknown[] | undefined;
-  if (body.mode === "gameshow") {
-    const res = await callDO(globalStub(c.env), "questions:get");
-    if (res.ok) questions = ((await res.json()) as { questions: unknown[] }).questions;
-  }
+  // Every room serves and grades its own questions, so hand it a snapshot of
+  // the question bank (which otherwise lives in GlobalDO) at creation time.
+  const questions = await fullBank(c.env);
 
   await callDO(roomStub(c.env, code), "create", { code, ...body, questions });
   await callDO(globalStub(c.env), "rooms:add", { code });
@@ -174,9 +214,17 @@ api.delete("/session/:code", async (c) => {
   return c.json({ ok: true });
 });
 
-api.post("/session/:code/score", async (c) => {
+// ---- Live quiz -----------------------------------------------------------
+// Players call these directly — the Durable Object checks the player token,
+// serves and times each question, grades the answer and keeps the score.
+api.post("/session/:code/quiz/next", async (c) => {
   const body = await c.req.json().catch(() => ({}) as any);
-  return proxy(await callDO(roomStub(c.env, c.req.param("code").toUpperCase()), "score", body));
+  return proxy(await callDO(roomStub(c.env, c.req.param("code").toUpperCase()), "quiz-next", body));
+});
+
+api.post("/session/:code/quiz/answer", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as any);
+  return proxy(await callDO(roomStub(c.env, c.req.param("code").toUpperCase()), "quiz-answer", body));
 });
 
 api.get("/metrics", async (c) => {

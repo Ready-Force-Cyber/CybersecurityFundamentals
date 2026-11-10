@@ -6,7 +6,8 @@ import {
   difficultyAvailability,
   SOLO_DIFFICULTIES,
 } from "../src/lib/questions";
-import { CYBER_QUESTIONS, type Question, type ConceptId } from "../src/constants";
+import type { Question, ConceptId } from "../src/constants";
+import { CYBER_QUESTIONS } from "../src/server-data/question-bank";
 import { CONCEPTS } from "../src/components/SoloMap";
 
 const CONCEPT_IDS = CONCEPTS.map((c) => c.id);

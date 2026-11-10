@@ -3,6 +3,14 @@
 import { normalizeTimePerQuestion } from "../lib/session-settings";
 import type { Question } from "../constants";
 import {
+  type QuizProgress,
+  toPublicQuestion,
+  gradeAnswer,
+  selectQuizQuestions,
+  serveQuizQuestion,
+  answerQuizQuestion,
+} from "../lib/quiz";
+import {
   type GameShowState,
   createGameShowState,
   assignTeam,
@@ -25,6 +33,8 @@ export interface PlayerRec {
   history: any[];
   /** Game-show mode only: which team this player plays for. */
   teamId?: string;
+  /** Quiz mode only: which question this player is on. */
+  quiz?: QuizProgress;
 }
 
 export interface RoomRec {
@@ -42,14 +52,16 @@ export interface RoomRec {
   /** Present only in game-show mode. */
   gameshow?: GameShowState;
   /**
-   * Snapshot of the question bank taken when a game-show room is created.
-   * The bank itself lives in GlobalDO, but copying it here keeps spinning and
-   * grading inside this object (no cross-DO call per spin) and means editing
-   * the bank mid-game cannot change a game already in progress.
+   * Snapshot of the question bank taken when the room is created. The bank
+   * itself lives in GlobalDO, but copying it here keeps serving and grading
+   * inside this object (no cross-DO call per answer) and means editing the
+   * bank mid-session cannot change a session already in progress.
    */
   questions?: Question[];
   /** Question ids already used this game, so spins don't repeat them. */
   usedQuestionIds?: string[];
+  /** Quiz mode: this session's questions, chosen and ordered when it starts. */
+  quizQuestions?: Question[];
 }
 
 function publicRoom(r: RoomRec) {
@@ -77,7 +89,8 @@ function publicQuestion(r: RoomRec, questionId: string | null) {
   if (!questionId) return null;
   const q = (r.questions ?? []).find((x) => x.id === questionId);
   if (!q) return null;
-  return { id: q.id, question: q.question, options: q.options, concept: q.concept, difficulty: q.difficulty };
+  // Seeded so the option order is stable across polls of the same question.
+  return toPublicQuestion(q, `${r.code}:${q.id}`);
 }
 
 /** Pick a question for a spin, avoiding ones already used this game. */
@@ -129,7 +142,7 @@ export class RoomDO {
         players: {},
         gameshow: gameshowMode ? createGameShowState(Number(body.teamCount) || 2, Number(body.rounds) || undefined) : undefined,
         // The worker passes the bank in, since it lives in GlobalDO.
-        questions: gameshowMode && Array.isArray(body.questions) ? body.questions : undefined,
+        questions: Array.isArray(body.questions) ? body.questions : undefined,
         usedQuestionIds: [],
       };
       await this.save(r);
@@ -181,9 +194,15 @@ export class RoomDO {
       }
 
       case "start": {
+        if (r.status !== "waiting") {
+          return json({ error: "This session has already started." }, 409);
+        }
         const minutes = Math.min(120, Math.max(1, Number(body.durationMinutes) || 5));
         r.status = "started";
         r.endTime = Date.now() + minutes * 60 * 1000;
+        if (r.mode === "quiz") {
+          r.quizQuestions = selectQuizQuestions(r.questions ?? [], r.difficulty, r.questionCount);
+        }
         await this.save(r);
         return json({ endTime: r.endTime });
       }
@@ -195,14 +214,21 @@ export class RoomDO {
         return json({ ok: true });
       }
 
-      case "score": {
+      // ---- Live quiz ----------------------------------------------------
+      // The room serves each question, times it, grades the answer and keeps
+      // the score. Clients used to report their own score and history; they
+      // no longer can.
+      case "quiz-next":
+      case "quiz-answer": {
         const p = r.players[body.playerId];
         if (!p || p.token !== body.playerToken) return json({ error: "Invalid player." }, 403);
-        const next = Number(body.score);
-        if (Number.isFinite(next) && next >= p.score && next <= 100000) p.score = next;
-        if (Array.isArray(body.history)) p.history = body.history.slice(0, 100);
-        await this.save(r);
-        return json({ ok: true });
+        const result =
+          action === "quiz-next"
+            ? serveQuizQuestion(r, p, Date.now())
+            : answerQuizQuestion(r, p, body.answer, Date.now());
+        // Both calls can change the player (clock started, answer recorded).
+        if (result.status === 200) await this.save(r);
+        return json(result.body, result.status);
       }
 
       // ---- Game show ----------------------------------------------------
@@ -241,9 +267,7 @@ export class RoomDO {
         if (!question) return json({ error: "Question is no longer available." }, 409);
 
         // Graded here so the answer key never leaves the Durable Object.
-        const correct =
-          typeof body.answer === "string" &&
-          body.answer.trim().toLowerCase() === question.correctAnswer.trim().toLowerCase();
+        const correct = gradeAnswer(question, body.answer);
 
         p.history.push({
           question: { id: question.id, question: question.question, concept: question.concept, difficulty: question.difficulty },

@@ -49,11 +49,11 @@ working.
 
 ## Environment variables
 
-Copy [.env.example](.env.example) to `.env` and fill in as needed. All are optional for local development.
+Copy [.env.example](.env.example) to `.env` and fill in as needed. `.env` is git-ignored — keep it that way.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `APP_PASSWORD` | The instructor password used to host sessions. **Always set this in production.** | `readyforce` |
+| `APP_PASSWORD` | The instructor password used to host sessions. **Required** — there is no default, and instructor sign-in is refused until it is set. | _none_ |
 | `GEMINI_API_KEY` | Enables the AI "teaching insights" on the instructor metrics tab. Without it, the rest of the app works normally. | _none_ |
 | `PORT` | Port the server listens on. | `3000` |
 

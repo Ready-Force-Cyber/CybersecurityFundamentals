@@ -19,7 +19,29 @@ export interface PublicQuestion {
   options?: string[];
   concept?: string;
   difficulty?: string;
+  type?: string;
+  imageUrl?: string;
 }
+
+/** What the server reveals once an answer has been graded. */
+export interface AnswerReveal {
+  correct: boolean;
+  correctAnswer: string;
+  explanation: string;
+}
+
+/** The server's reply when a live-quiz player asks for their question. */
+export type QuizNext =
+  | { done: true; total: number; score: number }
+  | {
+      done: false;
+      index: number;
+      total: number;
+      question: PublicQuestion;
+      /** How long this question has already been on the player's clock. */
+      elapsedMs: number;
+      score: number;
+    };
 
 export interface GameShowView {
   teams: { id: string; name: string; color: string; score: number }[];
@@ -77,7 +99,17 @@ export const api = {
   login: (password: string): Promise<{ token: string }> =>
     req("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
 
-  getQuestions: (): Promise<{ questions: any[] }> => req("/api/questions"),
+  // Sends the instructor token when there is one: students get the bank
+  // without answers, a signed-in instructor gets the full records to edit.
+  getQuestions: (): Promise<{ questions: any[] }> => req("/api/questions", {}, true),
+
+  /** Grade one solo-practice answer on the server. Nothing is recorded. */
+  checkAnswer: (questionId: string, answer: string): Promise<AnswerReveal> =>
+    req("/api/questions/check", { method: "POST", body: JSON.stringify({ questionId, answer }) }),
+
+  /** Restore the built-in question bank (instructor only). */
+  resetQuestions: (): Promise<{ questions: any[] }> =>
+    req("/api/questions/reset", { method: "POST", body: "{}" }, true),
 
   saveQuestions: (questions: any[]): Promise<{ questions: any[] }> =>
     req("/api/questions", { method: "PUT", body: JSON.stringify({ questions }) }, true),
@@ -138,16 +170,24 @@ export const api = {
   deleteSession: (code: string): Promise<{ ok: true }> =>
     req(`/api/session/${code}`, { method: "DELETE" }, true),
 
-  submitScore: (
+  // ---- Live quiz --------------------------------------------------------
+  /** Ask the server for this player's current question; starts its clock. */
+  quizNext: (code: string, playerId: string, playerToken: string): Promise<QuizNext> =>
+    req(`/api/session/${code}/quiz/next`, {
+      method: "POST",
+      body: JSON.stringify({ playerId, playerToken }),
+    }),
+
+  /** Send this player's answer to be graded and scored by the server. */
+  quizAnswer: (
     code: string,
     playerId: string,
     playerToken: string,
-    score: number,
-    history: any[],
-  ): Promise<{ ok: true }> =>
-    req(`/api/session/${code}/score`, {
+    answer: string,
+  ): Promise<AnswerReveal & { timedOut: boolean; awarded: number; score: number; done: boolean }> =>
+    req(`/api/session/${code}/quiz/answer`, {
       method: "POST",
-      body: JSON.stringify({ playerId, playerToken, score, history }),
+      body: JSON.stringify({ playerId, playerToken, answer }),
     }),
 
   getMetrics: (): Promise<any> => req("/api/metrics", {}, true),
