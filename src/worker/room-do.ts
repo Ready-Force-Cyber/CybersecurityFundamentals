@@ -1,6 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 
 import { normalizeTimePerQuestion } from "../lib/session-settings";
+import { normalizeDisplayName } from "../lib/display-name";
 import type { Question } from "../constants";
 import {
   type QuizProgress,
@@ -158,7 +159,7 @@ export class RoomDO {
 
       case "join": {
         if (r.status === "finished") return json({ error: "This session has already ended." }, 409);
-        const name = typeof body.name === "string" ? body.name.trim() : "";
+        const name = normalizeDisplayName(body.name);
         if (!name) return json({ error: "A name is required." }, 400);
         if (Object.keys(r.players).length >= 200) return json({ error: "This session is full." }, 409);
         const id = crypto.randomUUID();
@@ -174,7 +175,7 @@ export class RoomDO {
           teamId = assignTeam(r.gameshow.teams, sizes);
         }
 
-        r.players[id] = { id, token, name: name.slice(0, 50), score: 0, history: [], teamId };
+        r.players[id] = { id, token, name, score: 0, history: [], teamId };
         await this.save(r);
         return json({ playerId: id, playerToken: token, teamId, room: publicRoom(r) });
       }

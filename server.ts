@@ -9,6 +9,7 @@ import type { Question } from "./src/constants";
 import { CYBER_QUESTIONS } from "./src/server-data/question-bank";
 import { computeMetrics } from "./src/lib/metrics";
 import { normalizeTimePerQuestion } from "./src/lib/session-settings";
+import { normalizeDisplayName } from "./src/lib/display-name";
 import {
   type QuizProgress,
   toPublicQuestion,
@@ -340,8 +341,8 @@ async function startServer() {
     if (room.status === "finished") {
       return res.status(409).json({ error: "This session has already ended." });
     }
-    const { name } = req.body ?? {};
-    if (typeof name !== "string" || !name.trim()) {
+    const name = normalizeDisplayName(req.body?.name);
+    if (!name) {
       return res.status(400).json({ error: "A name is required." });
     }
     if (room.players.size >= 200) {
@@ -360,7 +361,7 @@ async function startServer() {
       teamId = assignTeam(room.gameshow.teams, sizes);
     }
 
-    room.players.set(id, { id, token, name: name.trim().slice(0, 50), score: 0, history: [], teamId });
+    room.players.set(id, { id, token, name, score: 0, history: [], teamId });
     res.json({ playerId: id, playerToken: token, teamId, room: publicRoom(room) });
   });
 

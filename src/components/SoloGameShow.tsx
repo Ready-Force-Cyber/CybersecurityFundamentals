@@ -4,7 +4,7 @@ import confetti from "canvas-confetti";
 import { AlertTriangle, CheckCircle2, ChevronRight, LogOut, XCircle, Zap } from "lucide-react";
 import { cn } from "../lib/utils";
 import { audio } from "../lib/audio";
-import { standardsFor } from "../lib/standards";
+import { learnerStandardTags } from "../lib/standards";
 import type { Question } from "../constants";
 import type { AnswerReveal } from "../lib/api";
 import {
@@ -563,16 +563,24 @@ function hazardText(
   return { title: "Lose a Turn", body: "No question on this spin. Nothing lost; spin again." };
 }
 
-/** Framework alignment for the question just answered. */
+/** Standards alignment for the question just answered: student, then workforce. */
 function StandardsTags({ question }: { question: Question }) {
-  const s = standardsFor(question);
-  const tags = [...(s.securityPlus ?? []), ...(s.nice ?? [])];
+  const tags = learnerStandardTags(question);
   if (tags.length === 0) return null;
   return (
-    <ul className="flex flex-wrap gap-2">
+    <ul className="flex flex-wrap gap-2" aria-label="Standards this question covers">
       {tags.map((tag) => (
-        <li key={tag} className="rounded-full border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
-          {tag}
+        <li
+          key={tag.label}
+          title={tag.title}
+          className={cn(
+            "rounded-full border px-2.5 py-1 text-[11px] font-semibold",
+            tag.anchor === "student"
+              ? "border-sky-400/30 bg-sky-400/10 text-sky-200"
+              : "border-white/15 bg-white/5 text-slate-300",
+          )}
+        >
+          {tag.label}
         </li>
       ))}
     </ul>
