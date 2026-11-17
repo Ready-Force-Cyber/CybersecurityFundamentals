@@ -16,7 +16,7 @@ import {
   applySpin,
   applyAnswer,
 } from "../lib/gameshow";
-import { WheelFace, nextWheelRotation } from "./Wheel";
+import { WheelFace, nextWheelRotation, SPIN_SECONDS } from "./Wheel";
 
 // Solo practice as a one-player game show: spin the wheel to set what the
 // next question is worth, answer it, bank the points. Same wheel and scoring
@@ -45,7 +45,8 @@ export interface SoloGameShowProps {
 
 type Stage = "idle" | "spinning" | "hazard" | "question" | "checking" | "feedback";
 
-const SPIN_SECONDS = 2.4;
+/** Fewest milliseconds between tick sounds, so a fast spin clicks, not buzzes. */
+const MIN_TICK_GAP_MS = 45;
 
 /**
  * Ref callback that focuses an element when it mounts, without scrolling.
@@ -86,13 +87,11 @@ export function SoloGameShow({
   const history = useRef<SoloHistoryEntry[]>([]);
   const shownAt = useRef(0);
   const landTimer = useRef<number | null>(null);
-  const tickTimer = useRef<number | null>(null);
+  const lastTick = useRef(0);
 
   const stopTimers = () => {
     if (landTimer.current !== null) window.clearTimeout(landTimer.current);
-    if (tickTimer.current !== null) window.clearInterval(tickTimer.current);
     landTimer.current = null;
-    tickTimer.current = null;
   };
   useEffect(() => stopTimers, []);
 
@@ -139,7 +138,8 @@ export function SoloGameShow({
     if (reducedMotion) {
       land();
     } else {
-      tickTimer.current = window.setInterval(() => audio.playTick(), 130);
+      // The wheel's own ticks (one per segment passing the pointer) drive
+      // the sound; this timer only lands the result once it has stopped.
       landTimer.current = window.setTimeout(land, SPIN_SECONDS * 1000);
     }
   };
@@ -314,6 +314,12 @@ export function SoloGameShow({
           <WheelFace
             rotation={rotation}
             duration={reducedMotion ? 0 : SPIN_SECONDS}
+            onTick={() => {
+              const now = performance.now();
+              if (now - lastTick.current < MIN_TICK_GAP_MS) return;
+              lastTick.current = now;
+              audio.playTick();
+            }}
             className={cn(
               "transition-[width] duration-300 lg:w-[300px]",
               showingQuestion ? "w-28" : "w-64 sm:w-72",

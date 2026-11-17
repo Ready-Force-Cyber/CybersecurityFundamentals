@@ -5,6 +5,29 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+/* Game-show wheel lights. Decorative only; switched off for reduced motion. */
+@keyframes wheel-bulb-chase {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; filter: drop-shadow(0 0 4px #fde68a); }
+}
+@keyframes wheel-bulb-flash {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 5px #fde68a); }
+  50% { opacity: 0.35; }
+}
+@keyframes wheel-winner-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.wheel-bulb-idle { opacity: 0.55; }
+.wheel-bulb-chase { animation: wheel-bulb-chase 0.36s linear infinite; }
+.wheel-bulb-flash { animation: wheel-bulb-flash 0.5s ease-in-out 4; }
+.wheel-winner { animation: wheel-winner-pulse 0.9s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .wheel-bulb-chase,
+  .wheel-bulb-flash,
+  .wheel-winner { animation: none; opacity: 1; filter: none; }
+}
+
 @layer utilities {
   .custom-scrollbar::-webkit-scrollbar {
     width: 4px;
