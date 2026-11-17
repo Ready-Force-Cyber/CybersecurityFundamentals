@@ -49,6 +49,7 @@ import {
 import { standardsFor, standardsCoverage } from "./lib/standards";
 import { SoloMap, CONCEPTS } from "./components/SoloMap";
 import { AboutReadyForce } from "./components/AboutReadyForce";
+import { SoloGameShow } from "./components/SoloGameShow";
 import { GameShowHost } from "./components/GameShowHost";
 import { GameShowPlayer } from "./components/GameShowPlayer";
 import {
@@ -869,6 +870,7 @@ export default function App() {
     // who need extended time can work at their own pace.
     if (
       gameState === "playing" &&
+      inLiveQuiz &&
       !showExplanation &&
       !isUntimed &&
       !answerPending &&
@@ -890,7 +892,7 @@ export default function App() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [timeLeft, gameState, showExplanation, isUntimed, answerPending, answerError, baseQuestion?.id]);
+  }, [timeLeft, gameState, inLiveQuiz, showExplanation, isUntimed, answerPending, answerError, baseQuestion?.id]);
 
   const handleAnswerSubmit = async (answer: string) => {
     if (showExplanation || answerPending || !baseQuestion) return;
@@ -903,24 +905,13 @@ export default function App() {
     setAnswerError(null);
     try {
       const info = playerInfoRef.current;
-      let correct: boolean;
-      let newScore = score;
-      let key: { correctAnswer: string; explanation: string };
-      if (inLiveQuiz && info && roomId) {
-        // Live quiz: the server grades, times and scores the answer.
-        const res = await api.quizAnswer(roomId, info.id, info.token, answer);
-        correct = res.correct;
-        newScore = res.score;
-        key = res;
-      } else {
-        // Solo practice: the server grades; the score is only ever local.
-        const res = await api.checkAnswer(question.id, answer);
-        correct = res.correct;
-        key = res;
-        // Untimed sessions award the base points only — there is no clock to
-        // race, so a speed bonus would penalise the accommodation.
-        if (correct) newScore = score + 100 + (isUntimed ? 0 : secondsLeft * 5);
-      }
+      if (!inLiveQuiz || !info || !roomId) return;
+      // The server grades, times and scores the answer. (Solo practice has
+      // its own screen, SoloGameShow, and never comes through here.)
+      const res = await api.quizAnswer(roomId, info.id, info.token, answer);
+      const correct = res.correct;
+      const newScore = res.score;
+      const key: { correctAnswer: string; explanation: string } = res;
 
       setRevealed((prev) => ({
         ...prev,
@@ -2091,7 +2082,36 @@ export default function App() {
             </motion.div>
           )}
 
-          {gameState === "playing" && !currentQuestion && (
+          {gameState === "playing" && !inLiveQuiz && (
+            <motion.div
+              key="solo-show"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex-1 flex flex-col"
+            >
+              <SoloGameShow
+                title={
+                  retryQuestions
+                    ? "Second chance: questions you missed"
+                    : soloAllTopics
+                      ? "All Topics Challenge"
+                      : (CONCEPTS.find((c) => c.id === activeCampaignConcept)?.name ?? "Practice")
+                }
+                questions={filteredQuestions}
+                check={(questionId, answer) => api.checkAnswer(questionId, answer)}
+                onFinish={({ score: finalScore, history }) => {
+                  setScore(finalScore);
+                  setGameHistory(history);
+                  finishRound();
+                }}
+                onExit={handleExitGame}
+                reducedMotion={!!prefersReducedMotion}
+              />
+            </motion.div>
+          )}
+
+          {gameState === "playing" && inLiveQuiz && !currentQuestion && (
             <motion.div
               key="playing-loading"
               initial={{ opacity: 0 }}
@@ -2126,7 +2146,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {gameState === "playing" && currentQuestion && (
+          {gameState === "playing" && inLiveQuiz && currentQuestion && (
             <motion.div
               key="playing"
               initial={{ opacity: 0 }}
