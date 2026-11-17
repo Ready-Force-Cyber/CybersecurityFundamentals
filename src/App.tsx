@@ -51,6 +51,7 @@ import { MAX_DISPLAY_NAME, looksLikeFullName } from "./lib/display-name";
 import { SoloMap, CONCEPTS } from "./components/SoloMap";
 import { AboutReadyForce } from "./components/AboutReadyForce";
 import { SoloGameShow } from "./components/SoloGameShow";
+import { GameShowStage } from "./components/GameShowStage";
 import { GameShowHost } from "./components/GameShowHost";
 import { GameShowPlayer } from "./components/GameShowPlayer";
 import {
@@ -202,6 +203,12 @@ export default function App() {
   // accommodation. Note the `??`: `||` would treat 0 as missing and silently
   // fall back to a timed value.
   const activeTimePerQuestion = roomData?.timePerQuestion ?? timePerQuestion;
+
+  /** Screens that show the game-show stage rather than the cyber background. */
+  const isGameShowScreen =
+    (gameState === "playing" && !inLiveQuiz) ||
+    gameState === "gameshow_play" ||
+    (gameState === "hosting" && roomData?.mode === "gameshow" && roomData?.status === "started");
   const isUntimed = activeTimePerQuestion === 0;
 
   const filteredQuestions = useMemo(() => {
@@ -1036,9 +1043,13 @@ export default function App() {
           : "bg-[#050505] text-slate-100 selection:bg-blue-500/30 overflow-hidden",
       )}
     >
+      {/* Every game-show screen — solo play, the class projector and a
+          student's team view — stands on the same studio stage. */}
+      {isGameShowScreen && <GameShowStage />}
+
       {/* Animated Background — purely decorative, so it is dropped entirely
           when the user has asked for reduced motion. */}
-      {!prefersReducedMotion && gameState !== "login" && gameState !== "lobby" && gameState !== "admin_dashboard" && gameState !== "waiting" && gameState !== "hosting" && gameState !== "campaign" && (
+      {!isGameShowScreen && !prefersReducedMotion && gameState !== "login" && gameState !== "lobby" && gameState !== "admin_dashboard" && gameState !== "waiting" && gameState !== "hosting" && gameState !== "campaign" && (
         <div className="fixed inset-0 z-0 pointer-events-none">
           {/* Animated Grid */}
           <div className="absolute inset-0 [mask-image:linear-gradient(to_bottom,white,transparent)]">

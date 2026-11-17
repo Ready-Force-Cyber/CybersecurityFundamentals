@@ -231,7 +231,7 @@ export function SoloGameShow({
   return (
     <div ref={root} className="flex-1 flex flex-col gap-5 scroll-mt-4">
       {/* Header: what you're playing, where you are, your score */}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl border border-white/10 bg-slate-950/70 backdrop-blur-sm p-4">
         {/* On a phone the title gets its own row, so it is not squeezed to
             a couple of letters by the progress and score beside it. */}
         <div className="min-w-0 basis-full sm:basis-0 sm:flex-1">
@@ -342,7 +342,7 @@ export function SoloGameShow({
                 initial={reducedMotion ? false : { opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={reducedMotion ? undefined : { opacity: 0 }}
-                className="rounded-3xl border border-white/10 bg-white/5 p-6 sm:p-8 text-center space-y-5"
+                className="rounded-3xl border border-white/10 bg-slate-950/70 backdrop-blur-sm p-6 sm:p-8 text-center space-y-5"
               >
                 <div className="space-y-2">
                   <h2 className="text-2xl sm:text-3xl font-black text-white">
@@ -389,10 +389,10 @@ export function SoloGameShow({
                 animate={{ opacity: 1, scale: 1 }}
                 exit={reducedMotion ? undefined : { opacity: 0 }}
                 className={cn(
-                  "rounded-3xl border p-6 sm:p-8 text-center space-y-5",
+                  "rounded-3xl border p-6 sm:p-8 text-center space-y-5 backdrop-blur-sm",
                   segment.kind === "double"
-                    ? "border-amber-400/40 bg-amber-400/10"
-                    : "border-rose-400/30 bg-rose-500/10",
+                    ? "border-amber-400/40 bg-[#1c1606]/85"
+                    : "border-rose-400/30 bg-[#1f0a10]/85",
                 )}
               >
                 <div className="flex justify-center">
@@ -424,7 +424,7 @@ export function SoloGameShow({
                 exit={reducedMotion ? undefined : { opacity: 0 }}
                 className="space-y-4"
               >
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-5 sm:p-7 space-y-5">
+                <div className="rounded-3xl border border-white/10 bg-slate-950/70 backdrop-blur-sm p-5 sm:p-7 space-y-5">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="px-3 py-1 rounded-full bg-amber-400 text-black text-sm font-black">
                       {segment?.kind === "points" ? `${segment.value} points` : "Question"}
@@ -511,7 +511,8 @@ export function SoloGameShow({
                     animate={{ opacity: 1, y: 0 }}
                     className={cn(
                       "rounded-3xl border p-5 sm:p-6 space-y-3",
-                      reveal.correct ? "border-emerald-400/40 bg-emerald-500/10" : "border-rose-400/40 bg-rose-500/10",
+                      "backdrop-blur-sm",
+                      reveal.correct ? "border-emerald-400/40 bg-[#061a12]/85" : "border-rose-400/40 bg-[#1f0a10]/85",
                     )}
                   >
                     <p className={cn("text-xl font-black", reveal.correct ? "text-emerald-300" : "text-rose-300")}>
