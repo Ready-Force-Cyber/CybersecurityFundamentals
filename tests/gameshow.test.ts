@@ -6,6 +6,9 @@ import {
   MAX_TEAMS,
   BANKRUPT_PENALTY,
   DEFAULT_ROUNDS,
+  SOLO_PLAYER_ID,
+  createSoloGameShowState,
+  soloContinue,
   isGameOver,
   roundInfo,
   winningTeams,
@@ -403,5 +406,88 @@ describe("winningTeams", () => {
   it("has no winner when every score is zero after setbacks", () => {
     const s = createGameShowState(2);
     expect(winningTeams({ ...s, teams: s.teams.map((t) => ({ ...t, score: 0 })) })).toEqual([]);
+  });
+});
+
+// Solo practice is the same game with one player. What must hold: the same
+// scoring as the class game, and hazards never cost the learner a question.
+describe("solo play", () => {
+  it("starts with one player, no score, ready to spin", () => {
+    const s = createSoloGameShowState();
+    expect(s.teams).toHaveLength(1);
+    expect(s.teams[0]).toMatchObject({ id: SOLO_PLAYER_ID, score: 0 });
+    expect(s.phase).toBe("idle");
+    expect(activeTeam(s)?.id).toBe(SOLO_PLAYER_ID);
+  });
+
+  it("scores a correct answer at the value the wheel landed on", () => {
+    let s = applySpin(createSoloGameShowState(), seg("p700"), "q1");
+    expect(s.phase).toBe("question");
+    s = applyAnswer(s, true);
+    expect(s.teams[0].score).toBe(700);
+  });
+
+  it("doubles the next question after landing on Double", () => {
+    let s = applySpin(createSoloGameShowState(), seg("double1"), null);
+    s = soloContinue(s, 3);
+    s = applySpin(s, seg("p500"), "q1");
+    s = applyAnswer(s, true);
+    expect(s.teams[0].score).toBe(1000);
+    expect(s.doubleNext).toBe(false);
+  });
+
+  it("keeps the Double armed after a wrong answer", () => {
+    let s = applySpin(createSoloGameShowState(), seg("double1"), null);
+    s = soloContinue(s, 3);
+    s = applyAnswer(applySpin(s, seg("p500"), "q1"), false);
+    expect(s.teams[0].score).toBe(0);
+    expect(s.doubleNext).toBe(true);
+  });
+
+  it("takes the Setback penalty, never below zero", () => {
+    let s = applyAnswer(applySpin(createSoloGameShowState(), seg("p1000"), "q1"), true);
+    s = soloContinue(s, 2);
+    s = applySpin(s, seg("bankrupt1"), null);
+    expect(s.teams[0].score).toBe(1000 - BANKRUPT_PENALTY);
+
+    const broke = applySpin(createSoloGameShowState(), seg("bankrupt1"), null);
+    expect(broke.teams[0].score).toBe(0);
+  });
+
+  it("goes back to idle after a hazard while questions remain", () => {
+    for (const hazard of ["lose1", "double1", "bankrupt1"]) {
+      const s = soloContinue(applySpin(createSoloGameShowState(), seg(hazard), null), 3);
+      expect(s.phase).toBe("idle");
+      expect(s.spin).toBeNull();
+    }
+  });
+
+  // The learner must get to attempt every question whatever the wheel does.
+  it("never ends the game on a hazard while questions remain", () => {
+    let s = createSoloGameShowState();
+    for (let i = 0; i < 50; i++) {
+      s = soloContinue(applySpin(s, seg("lose1"), null), 1);
+      expect(s.phase).toBe("idle");
+    }
+  });
+
+  it("finishes once the last question has been answered", () => {
+    let s = applyAnswer(applySpin(createSoloGameShowState(), seg("p300"), "q1"), true);
+    s = soloContinue(s, 0);
+    expect(s.phase).toBe("final");
+    expect(isGameOver(s)).toBe(true);
+    expect(s.teams[0].score).toBe(300);
+  });
+
+  it("does not skip past a question that is waiting for an answer", () => {
+    const asking = applySpin(createSoloGameShowState(), seg("p300"), "q1");
+    expect(soloContinue(asking, 2)).toEqual(asking);
+  });
+
+  it("stays finished once finished", () => {
+    let s = applyAnswer(applySpin(createSoloGameShowState(), seg("p300"), "q1"), true);
+    s = soloContinue(s, 0);
+    expect(soloContinue(s, 5)).toEqual(s);
+    expect(applySpin(s, seg("p900"), "q2")).toEqual(s);
   });
 });

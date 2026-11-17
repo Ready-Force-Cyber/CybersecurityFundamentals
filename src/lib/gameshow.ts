@@ -273,6 +273,49 @@ export function winningTeams(s: GameShowState): Team[] {
   return rankedTeams(s).filter((t) => t.score === top);
 }
 
+// ---- Solo play -------------------------------------------------------------
+// One player, the same wheel and the same scoring. The differences are in who
+// drives it: the learner spins for themselves, and the game is as long as the
+// set of questions being practised rather than a number of rounds.
+
+export const SOLO_PLAYER_ID = "solo";
+
+/** A one-player game. The single "team" is the learner. */
+export function createSoloGameShowState(): GameShowState {
+  return {
+    teams: [{ id: SOLO_PLAYER_ID, name: "You", color: "emerald", score: 0 }],
+    turnIndex: 0,
+    phase: "idle",
+    spin: null,
+    questionId: null,
+    doubleNext: false,
+    lastOutcome: null,
+    turnsTaken: 0,
+    // Solo play ends when the questions run out, not after a count of turns.
+    turnLimit: Number.MAX_SAFE_INTEGER,
+  };
+}
+
+/**
+ * Move on after a spin has resolved in solo play: ready to spin again, or
+ * finished once no questions are left.
+ *
+ * Hazards never use up a question — a learner always gets to attempt every
+ * question in the set, whatever the wheel does — so the caller says how many
+ * remain rather than this counting turns.
+ */
+export function soloContinue(state: GameShowState, questionsLeft: number): GameShowState {
+  if (state.phase === "final" || state.phase === "question") return state;
+  return {
+    ...state,
+    phase: questionsLeft > 0 ? "idle" : "final",
+    spin: null,
+    questionId: null,
+    lastOutcome: null,
+    turnsTaken: state.turnsTaken + 1,
+  };
+}
+
 /** Teams ranked for the leaderboard: highest score first, then name. */
 export function rankedTeams(state: GameShowState): Team[] {
   return [...state.teams].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
