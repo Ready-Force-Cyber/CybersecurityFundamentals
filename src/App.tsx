@@ -31,7 +31,7 @@ import {
   Crown,
 } from "lucide-react";
 import confetti from "canvas-confetti";
-import { CYBER_QUESTIONS, type Question, type ConceptId } from "./constants";
+import type { Question, ConceptId } from "./constants";
 import { cn } from "./lib/utils";
 import { audio } from "./lib/audio";
 import {
@@ -109,7 +109,25 @@ export default function App() {
   const [roomId, setRoomId] = useState("");
   const [roomData, setRoomData] = useState<any>(null);
   const [players, setPlayers] = useState<PlayerData[]>([]);
-  const [bankQuestions, setBankQuestions] = useState<Question[]>(CYBER_QUESTIONS);
+  // The question bank as this browser knows it. Students receive it without
+  // `correctAnswer` / `explanation`; only a signed-in instructor receives the
+  // full records. Answers reach a student one at a time, via `revealed`.
+  const [bankQuestions, setBankQuestions] = useState<Question[]>([]);
+  /** Answers the server has revealed, by question id — only after answering. */
+  const [revealed, setRevealed] = useState<
+    Record<string, { correctAnswer: string; explanation: string }>
+  >({});
+  /** True while playing a live quiz, where the server serves each question. */
+  const [inLiveQuiz, setInLiveQuiz] = useState(false);
+  /** Live quiz: the question the server is serving this player right now. */
+  const [liveQuestion, setLiveQuestion] = useState<Question | null>(null);
+  const [liveProgress, setLiveProgress] = useState<{ index: number; total: number } | null>(null);
+  /** Live quiz: the next question could not be fetched (e.g. offline). */
+  const [liveLoadError, setLiveLoadError] = useState(false);
+  /** True while an answer is with the server being graded. */
+  const [answerPending, setAnswerPending] = useState(false);
+  /** Grading failed (e.g. offline); holds the answer so it can be retried. */
+  const [answerError, setAnswerError] = useState<{ answer: string } | null>(null);
   const [adminTab, setAdminTab] = useState<"sessions" | "questions" | "metrics">("sessions");
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsData, setMetricsData] = useState<any>(null);
@@ -248,7 +266,15 @@ export default function App() {
     soloDifficulty,
   ]);
 
-  const currentQuestion = filteredQuestions[currentQuestionIndex];
+  // In a live quiz the server decides the question; otherwise it comes from
+  // the local list. Either way the answer key is merged in only once the
+  // server has revealed it for this question.
+  const baseQuestion: Question | undefined = inLiveQuiz
+    ? (liveQuestion ?? undefined)
+    : filteredQuestions[currentQuestionIndex];
+  const currentQuestion: Question | undefined = baseQuestion
+    ? { ...baseQuestion, ...(revealed[baseQuestion.id] ?? {}) }
+    : undefined;
 
   // Restore an instructor session (if the token is still in sessionStorage).
   useEffect(() => {
@@ -304,11 +330,12 @@ export default function App() {
     api
       .getQuestions()
       .then((data) => {
-        if (cancelled) return;
-        setBankQuestions(data.questions?.length ? (data.questions as Question[]) : CYBER_QUESTIONS);
+        if (cancelled || !Array.isArray(data.questions)) return;
+        setBankQuestions(data.questions as Question[]);
       })
       .catch(() => {
-        if (!cancelled) setBankQuestions(CYBER_QUESTIONS);
+        // Keep whatever is already loaded. There is no built-in copy in the
+        // browser to fall back to — it would ship the answer key to students.
       });
     return () => {
       cancelled = true;
@@ -610,9 +637,8 @@ export default function App() {
   const handleSeedQuestions = async () => {
     if (!isAdmin) return;
     try {
-      const reset = CYBER_QUESTIONS.map((q) => ({ ...q }));
-      await api.saveQuestions(reset);
-      setBankQuestions(reset);
+      const { questions } = await api.resetQuestions();
+      setBankQuestions(questions as Question[]);
     } catch (e) {
       console.error("Error resetting questions:", e);
     }
@@ -681,6 +707,53 @@ export default function App() {
     }
   };
 
+  /** End of a round: show the results screen. */
+  const finishRound = () => {
+    setGameState("results");
+    audio.playEnd();
+    if (!prefersReducedMotion) {
+      confetti({
+        particleCount: 150,
+        spread: 120,
+        origin: { y: 0.5 },
+      });
+    }
+  };
+
+  /**
+   * Live quiz: fetch this player's current question from the server. The
+   * server picks the question and starts its clock, so the browser never
+   * holds the question list — or any answer — ahead of time.
+   */
+  const loadLiveQuestion = async () => {
+    const info = playerInfoRef.current;
+    if (!info || !roomId) return;
+    setLiveLoadError(false);
+    try {
+      const res = await api.quizNext(roomId, info.id, info.token);
+      setScore(res.score);
+      if (res.done) {
+        finishRound();
+        return;
+      }
+      setLiveQuestion(res.question as Question);
+      setLiveProgress({ index: res.index, total: res.total });
+      setUserAnswer("");
+      setShowExplanation(false);
+      setIsCorrect(null);
+      setAnswerError(null);
+      // Pick the clock up where the server has it (matters after a reload).
+      setTimeLeft(Math.max(0, activeTimePerQuestion - Math.floor(res.elapsedMs / 1000)));
+    } catch (err: any) {
+      // 409/404/403: the session ended, was deleted, or no longer knows us.
+      if (err?.status === 409 || err?.status === 404 || err?.status === 403) {
+        finishRound();
+      } else {
+        setLiveLoadError(true);
+      }
+    }
+  };
+
   const startGameLocally = () => {
     setGameState("playing");
     setConfirmExit(false);
@@ -688,13 +761,21 @@ export default function App() {
     setScore(0);
     setGameHistory([]);
     resetQuestionState();
+    setRetryQuestions(null);
+    setInLiveQuiz(true);
+    setLiveQuestion(null);
+    setLiveProgress(null);
+    setAnswerError(null);
     audio.playStart();
+    void loadLiveQuestion();
   };
 
   const handleStartCampaignConcept = (conceptId: string) => {
     setActiveCampaignConcept(conceptId);
     setSoloAllTopics(false);
     setRetryQuestions(null); // a fresh attempt plays the full concept
+    setInLiveQuiz(false);
+    setAnswerError(null);
     setGameState("playing");
     setConfirmExit(false);
     setCurrentQuestionIndex(0);
@@ -713,6 +794,8 @@ export default function App() {
     setActiveCampaignConcept(null);
     setSoloAllTopics(true);
     setRetryQuestions(null);
+    setInLiveQuiz(false);
+    setAnswerError(null);
     setGameState("playing");
     setConfirmExit(false);
     setCurrentQuestionIndex(0);
@@ -727,6 +810,8 @@ export default function App() {
     const missed = getMissedQuestions(gameHistory as any);
     if (missed.length === 0) return;
     setRetryQuestions(missed);
+    setInLiveQuiz(false);
+    setAnswerError(null);
     setGameState("playing");
     setConfirmExit(false);
     setCurrentQuestionIndex(0);
@@ -743,6 +828,8 @@ export default function App() {
     setActiveCampaignConcept(null);
     setSoloAllTopics(false);
     setRetryQuestions(null);
+    setInLiveQuiz(false);
+    setAnswerError(null);
     setCurrentQuestionIndex(0);
     setScore(0);
     setGameHistory([]);
@@ -777,20 +864,17 @@ export default function App() {
     setIsCorrect(null);
   };
 
-  const syncScoreAndHistory = async (newScore: number, history: any) => {
-    const info = playerInfoRef.current;
-    if (!info || !roomId) return;
-    try {
-      await api.submitScore(roomId, info.id, info.token, newScore, history);
-    } catch (error) {
-      console.error("Failed to sync score:", error);
-    }
-  };
-
   useEffect(() => {
     // Untimed sessions never count down and never auto-submit, so learners
     // who need extended time can work at their own pace.
-    if (gameState === "playing" && !showExplanation && !isUntimed) {
+    if (
+      gameState === "playing" &&
+      !showExplanation &&
+      !isUntimed &&
+      !answerPending &&
+      !answerError &&
+      baseQuestion
+    ) {
       if (timeLeft > 0) {
         timerRef.current = setTimeout(() => {
           if (timeLeft <= 6) {
@@ -806,60 +890,92 @@ export default function App() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [timeLeft, gameState, showExplanation, isUntimed]);
+  }, [timeLeft, gameState, showExplanation, isUntimed, answerPending, answerError, baseQuestion?.id]);
 
-  const handleAnswerSubmit = (answer: string) => {
-    if (showExplanation) return;
-    const correct =
-      answer.toLowerCase() === currentQuestion.correctAnswer.toLowerCase();
+  const handleAnswerSubmit = async (answer: string) => {
+    if (showExplanation || answerPending || !baseQuestion) return;
+    const question = baseQuestion;
+    const secondsLeft = Math.max(0, timeLeft);
     // Record the choice so the results view can highlight which option the
     // learner actually picked alongside the correct one.
     setUserAnswer(answer);
-    setIsCorrect(correct);
-    let newScore = score;
-    if (correct) {
-      audio.playCorrect();
-      // Untimed sessions award the base points only — there is no clock to
-      // race, so a speed bonus would penalise the accommodation.
-      newScore = score + 100 + (isUntimed ? 0 : timeLeft * 5);
-      setScore(newScore);
-      if (!prefersReducedMotion) {
-        confetti({
-          particleCount: 50,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ["#22c55e", "#ffffff"],
-        });
+    setAnswerPending(true);
+    setAnswerError(null);
+    try {
+      const info = playerInfoRef.current;
+      let correct: boolean;
+      let newScore = score;
+      let key: { correctAnswer: string; explanation: string };
+      if (inLiveQuiz && info && roomId) {
+        // Live quiz: the server grades, times and scores the answer.
+        const res = await api.quizAnswer(roomId, info.id, info.token, answer);
+        correct = res.correct;
+        newScore = res.score;
+        key = res;
+      } else {
+        // Solo practice: the server grades; the score is only ever local.
+        const res = await api.checkAnswer(question.id, answer);
+        correct = res.correct;
+        key = res;
+        // Untimed sessions award the base points only — there is no clock to
+        // race, so a speed bonus would penalise the accommodation.
+        if (correct) newScore = score + 100 + (isUntimed ? 0 : secondsLeft * 5);
       }
-    } else {
-      audio.playIncorrect();
+
+      setRevealed((prev) => ({
+        ...prev,
+        [question.id]: { correctAnswer: key.correctAnswer, explanation: key.explanation },
+      }));
+      setIsCorrect(correct);
+      setScore(newScore);
+      if (correct) {
+        audio.playCorrect();
+        if (!prefersReducedMotion) {
+          confetti({
+            particleCount: 50,
+            spread: 70,
+            origin: { y: 0.6 },
+            colors: ["#22c55e", "#ffffff"],
+          });
+        }
+      } else {
+        audio.playIncorrect();
+      }
+      setGameHistory((prev) => [
+        ...prev,
+        {
+          question,
+          correct,
+          // No meaningful elapsed time to report when the question is untimed.
+          timeTaken: isUntimed ? 0 : activeTimePerQuestion - secondsLeft,
+        },
+      ]);
+      setShowExplanation(true);
+    } catch (err: any) {
+      setUserAnswer("");
+      if (inLiveQuiz && err?.status === 409) {
+        // The server is not waiting on this question (already answered, or
+        // the session ended). Ask it where we are rather than guessing.
+        await loadLiveQuestion();
+      } else {
+        setAnswerError({ answer });
+      }
+    } finally {
+      setAnswerPending(false);
     }
-    const newHistoryEntry = {
-      question: currentQuestion,
-      correct,
-      // No meaningful elapsed time to report when the question is untimed.
-      timeTaken: isUntimed ? 0 : activeTimePerQuestion - Math.max(0, timeLeft),
-    };
-    const newHistory = [...gameHistory, newHistoryEntry];
-    setGameHistory(newHistory);
-    syncScoreAndHistory(newScore, newHistory);
-    setShowExplanation(true);
   };
 
   const nextQuestion = () => {
+    if (inLiveQuiz) {
+      // The server decides what comes next, and when the quiz is over.
+      void loadLiveQuestion();
+      return;
+    }
     if (currentQuestionIndex < filteredQuestions.length - 1) {
       setCurrentQuestionIndex((prev) => prev + 1);
       resetQuestionState();
     } else {
-      setGameState("results");
-      audio.playEnd();
-      if (!prefersReducedMotion) {
-        confetti({
-          particleCount: 150,
-          spread: 120,
-          origin: { y: 0.5 },
-        });
-      }
+      finishRound();
     }
   };
 
@@ -1975,7 +2091,42 @@ export default function App() {
             </motion.div>
           )}
 
-          {gameState === "playing" && (
+          {gameState === "playing" && !currentQuestion && (
+            <motion.div
+              key="playing-loading"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex-1 flex flex-col items-center justify-center gap-4 text-center"
+              role="status"
+              aria-live="polite"
+            >
+              {liveLoadError ? (
+                <>
+                  <p className="text-lg font-semibold text-white">
+                    Couldn't load the next question.
+                  </p>
+                  <p className="text-sm text-slate-400">Check your connection and try again.</p>
+                  <button
+                    onClick={() => void loadLiveQuestion()}
+                    className="px-5 py-3 rounded-xl bg-emerald-500 text-black font-bold hover:bg-emerald-400 transition-colors"
+                  >
+                    Try again
+                  </button>
+                </>
+              ) : (
+                <p className="text-lg font-semibold text-slate-300">Loading question…</p>
+              )}
+              <button
+                onClick={handleExitGame}
+                className="text-sm text-slate-500 hover:text-slate-300 underline"
+              >
+                Leave
+              </button>
+            </motion.div>
+          )}
+
+          {gameState === "playing" && currentQuestion && (
             <motion.div
               key="playing"
               initial={{ opacity: 0 }}
@@ -2110,7 +2261,9 @@ export default function App() {
                     Question
                   </p>
                   <p className="text-xl font-bold font-mono">
-                    {currentQuestionIndex + 1}/{filteredQuestions.length}
+                    {inLiveQuiz
+                      ? `${(liveProgress?.index ?? 0) + 1}/${liveProgress?.total ?? 0}`
+                      : `${currentQuestionIndex + 1}/${filteredQuestions.length}`}
                   </p>
                 </div>
 
@@ -2179,7 +2332,7 @@ export default function App() {
                       currentQuestion.options?.map((option, idx) => (
                         <motion.button
                           key={idx}
-                          disabled={showExplanation}
+                          disabled={showExplanation || answerPending}
                           onClick={() => handleAnswerSubmit(option)}
                           whileHover={!showExplanation && !prefersReducedMotion ? { scale: 1.02 } : {}}
                           whileTap={!showExplanation && !prefersReducedMotion ? { scale: 0.98 } : {}}
@@ -2228,6 +2381,23 @@ export default function App() {
                   </div>
                 </motion.div>
               </div>
+
+              {/* Grading happens on the server, so it can fail (e.g. the
+                  connection dropped). Say so and let the learner retry. */}
+              {answerError && (
+                <div
+                  role="alert"
+                  className="max-w-xl mx-auto w-full p-4 rounded-2xl border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm flex flex-wrap items-center justify-between gap-3"
+                >
+                  <span>Couldn't check your answer. Check your connection and try again.</span>
+                  <button
+                    onClick={() => handleAnswerSubmit(answerError.answer)}
+                    className="px-4 py-2 rounded-xl bg-amber-400 text-black font-bold hover:bg-amber-300 transition-colors"
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
 
               {/* Screen-reader announcement of the result. Visually hidden
                   because the same information is conveyed on screen. */}

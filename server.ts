@@ -1,12 +1,23 @@
+import dotenv from "dotenv";
 import express from "express";
 import path from "path";
 import crypto from "crypto";
 import helmet from "helmet";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import { CYBER_QUESTIONS, type Question } from "./src/constants";
+import type { Question } from "./src/constants";
+import { CYBER_QUESTIONS } from "./src/server-data/question-bank";
 import { computeMetrics } from "./src/lib/metrics";
 import { normalizeTimePerQuestion } from "./src/lib/session-settings";
+import {
+  type QuizProgress,
+  toPublicQuestion,
+  gradeAnswer,
+  revealAnswer,
+  selectQuizQuestions,
+  serveQuizQuestion,
+  answerQuizQuestion,
+} from "./src/lib/quiz";
 import {
   type GameShowState,
   createGameShowState,
@@ -18,10 +29,17 @@ import {
   activeTeam,
 } from "./src/lib/gameshow";
 
+// Local development reads settings (APP_PASSWORD, GEMINI_API_KEY) from .env.
+// Variables already set in the environment win, so hosting is unaffected.
+dotenv.config({ quiet: true });
+
 // ---------------------------------------------------------------------------
 // Auth: a single shared instructor password, exchanged for a signed token.
 // ---------------------------------------------------------------------------
-const APP_PASSWORD = process.env.APP_PASSWORD || "readyforce";
+// There is deliberately no built-in password. This repository is public, so
+// any default written here is known to everyone; with APP_PASSWORD unset,
+// instructor sign-in is refused rather than falling back to one.
+const APP_PASSWORD = process.env.APP_PASSWORD || "";
 const TOKEN_SECRET = crypto
   .createHash("sha256")
   .update(`rfc-token-secret:${APP_PASSWORD}`)
@@ -35,6 +53,7 @@ function createToken(): string {
 }
 
 function verifyToken(token: string): boolean {
+  if (!APP_PASSWORD) return false;
   const [exp, sig] = (token || "").split(".");
   if (!exp || !sig) return false;
   const expected = crypto.createHmac("sha256", TOKEN_SECRET).update(exp).digest("hex");
@@ -103,6 +122,8 @@ interface Player {
   history: HistoryEntry[];
   /** Game-show mode only: which team this player plays for. */
   teamId?: string;
+  /** Quiz mode only: which question this player is on. */
+  quiz?: QuizProgress;
 }
 interface Room {
   code: string;
@@ -120,6 +141,12 @@ interface Room {
   gameshow?: GameShowState;
   /** Question ids already used this game, so spins don't repeat them. */
   usedQuestionIds?: string[];
+  /**
+   * Quiz mode: the questions for this session, chosen and ordered when it
+   * starts. Kept on the room, with answers, so grading is unaffected by edits
+   * to the bank mid-session.
+   */
+  quizQuestions?: Question[];
 }
 
 const rooms = new Map<string, Room>();
@@ -161,17 +188,18 @@ function publicRoom(room: Room) {
     // Game-show state, including the question currently in play. The correct
     // answer is never sent — answers are graded server-side.
     gameshow: room.gameshow
-      ? { ...room.gameshow, question: publicQuestion(room.gameshow.questionId) }
+      ? { ...room.gameshow, question: publicQuestion(room.code, room.gameshow.questionId) }
       : undefined,
   };
 }
 
 /** The in-play question, stripped of its answer key. */
-function publicQuestion(questionId: string | null) {
+function publicQuestion(code: string, questionId: string | null) {
   if (!questionId) return null;
   const q = questionBank.find((x) => x.id === questionId);
   if (!q) return null;
-  return { id: q.id, question: q.question, options: q.options, concept: q.concept, difficulty: q.difficulty };
+  // Seeded so the option order is stable across polls of the same question.
+  return toPublicQuestion(q, `${code}:${q.id}`);
 }
 
 /** Pick a question for a spin, avoiding ones already used this game. */
@@ -214,6 +242,11 @@ async function startServer() {
     if (isRateLimited(`login:${ip}`, 5, 60 * 1000)) {
       return res.status(429).json({ error: "Too many attempts. Try again later." });
     }
+    if (!APP_PASSWORD) {
+      return res.status(503).json({
+        error: "Instructor sign-in is not configured. Set APP_PASSWORD on the server.",
+      });
+    }
     const { password } = req.body ?? {};
     if (typeof password !== "string" || !safeCompare(password, APP_PASSWORD)) {
       return res.status(401).json({ error: "Incorrect password." });
@@ -222,7 +255,27 @@ async function startServer() {
   });
 
   // ---- Question bank ----------------------------------------------------
-  app.get("/api/questions", (_req, res) => {
+  // Students get the bank without its answer key and with options shuffled.
+  // Only a signed-in instructor (who edits the bank) gets the full records.
+  app.get("/api/questions", (req, res) => {
+    if (verifyToken(bearer(req))) return res.json({ questions: questionBank });
+    res.json({ questions: questionBank.map((q) => toPublicQuestion(q)) });
+  });
+
+  // Grade one answer for solo practice. Nothing is recorded — solo play has
+  // no score on the server — but it keeps the key out of the browser.
+  app.post("/api/questions/check", (req, res) => {
+    const { questionId, answer } = req.body ?? {};
+    const question = questionBank.find((q) => q.id === questionId);
+    if (!question) return res.status(404).json({ error: "Question not found." });
+    res.json(revealAnswer(question, answer));
+  });
+
+  // Restore the built-in bank. The built-in questions live on the server
+  // only, so the client can no longer send them back itself.
+  app.post("/api/questions/reset", (req, res) => {
+    if (!requireInstructor(req, res)) return;
+    questionBank = CYBER_QUESTIONS.map((q) => ({ ...q }));
     res.json({ questions: questionBank });
   });
 
@@ -358,9 +411,7 @@ async function startServer() {
     if (!question) return res.status(409).json({ error: "Question is no longer available." });
 
     // Graded server-side so the answer key never reaches the client.
-    const correct =
-      typeof answer === "string" &&
-      answer.trim().toLowerCase() === question.correctAnswer.trim().toLowerCase();
+    const correct = gradeAnswer(question, answer);
 
     player.history.push({ question: { id: question.id, question: question.question, concept: question.concept, difficulty: question.difficulty }, correct, timeTaken: 0 });
     room.gameshow = applyAnswer(room.gameshow, correct);
@@ -400,9 +451,15 @@ async function startServer() {
     if (!requireInstructor(req, res)) return;
     const room = rooms.get(req.params.code.toUpperCase());
     if (!room) return res.status(404).json({ error: "Session not found." });
+    if (room.status !== "waiting") {
+      return res.status(409).json({ error: "This session has already started." });
+    }
     const minutes = Math.min(120, Math.max(1, Number(req.body?.durationMinutes) || 5));
     room.status = "started";
     room.endTime = Date.now() + minutes * 60 * 1000;
+    if (room.mode === "quiz") {
+      room.quizQuestions = selectQuizQuestions(questionBank, room.difficulty, room.questionCount);
+    }
     res.json({ endTime: room.endTime });
   });
 
@@ -421,23 +478,39 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  app.post("/api/session/:code/score", (req, res) => {
+  // ---- Live quiz ---------------------------------------------------------
+  // The server serves each question, times it, grades the answer and keeps
+  // the score. Clients used to report their own score and history; they no
+  // longer can.
+  const quizPlayer = (req: express.Request, res: express.Response) => {
     const room = rooms.get(req.params.code.toUpperCase());
-    if (!room) return res.status(404).json({ error: "Session not found." });
-    const { playerId, playerToken, score, history } = req.body ?? {};
+    if (!room) {
+      res.status(404).json({ error: "Session not found." });
+      return null;
+    }
+    const { playerId, playerToken } = req.body ?? {};
     const player = room.players.get(playerId);
     if (!player || player.token !== playerToken) {
-      return res.status(403).json({ error: "Invalid player." });
+      res.status(403).json({ error: "Invalid player." });
+      return null;
     }
-    // Server-side anti-cheat, mirroring the old Firestore rules.
-    const next = Number(score);
-    if (Number.isFinite(next) && next >= player.score && next <= 100000) {
-      player.score = next;
-    }
-    if (Array.isArray(history)) {
-      player.history = history.slice(0, 100);
-    }
-    res.json({ ok: true });
+    return { room, player };
+  };
+
+  /** Serve the player's current question and start its clock. */
+  app.post("/api/session/:code/quiz/next", (req, res) => {
+    const found = quizPlayer(req, res);
+    if (!found) return;
+    const result = serveQuizQuestion(found.room, found.player, Date.now());
+    res.status(result.status).json(result.body);
+  });
+
+  /** Grade the player's answer to the question they were served. */
+  app.post("/api/session/:code/quiz/answer", (req, res) => {
+    const found = quizPlayer(req, res);
+    if (!found) return;
+    const result = answerQuizQuestion(found.room, found.player, req.body?.answer, Date.now());
+    res.status(result.status).json(result.body);
   });
 
   // ---- Metrics + AI -----------------------------------------------------
@@ -509,6 +582,11 @@ Provide your analysis in JSON format with an array of "suggestions", each contai
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    if (!APP_PASSWORD) {
+      console.warn(
+        "APP_PASSWORD is not set: instructor sign-in is disabled. Set it in the environment or in .env.",
+      );
+    }
   });
 }
 

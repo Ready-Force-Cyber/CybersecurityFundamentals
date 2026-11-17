@@ -3,7 +3,7 @@
 // A single Durable Object instance (named "global") that holds cross-room state:
 // the editable question bank, the login rate-limit counters, and a registry of
 // active room codes (so the dashboard and metrics can enumerate sessions).
-import { CYBER_QUESTIONS } from "../constants";
+import { CYBER_QUESTIONS } from "../server-data/question-bank";
 import { reconcileBank } from "../lib/questions";
 
 interface RateEntry {
@@ -38,6 +38,13 @@ export class GlobalDO {
         const q = Array.isArray(body.questions) ? body.questions.slice(0, 500) : [];
         await storage.put("questions", q);
         return json({ questions: q });
+      }
+
+      // Restore the built-in bank. Dropping the stored copy is enough:
+      // questions:get serves the built-in set whenever nothing is stored.
+      case "questions:reset": {
+        await storage.delete("questions");
+        return json({ questions: CYBER_QUESTIONS });
       }
 
       case "rate": {

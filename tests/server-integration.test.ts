@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { CYBER_QUESTIONS } from "../src/constants";
+import { CYBER_QUESTIONS } from "../src/server-data/question-bank";
 
 // Black-box integration tests: spawn the real server.ts (via tsx) as a child
 // process on a dedicated test port, then exercise it purely over HTTP — no
@@ -74,6 +74,52 @@ describe("GET /api/questions", () => {
   });
 });
 
+describe("answer key exposure", () => {
+  it("serves students the bank without answers or explanations", async () => {
+    const res = await fetch(`${BASE}/api/questions`);
+    const { questions } = (await res.json()) as { questions: any[] };
+    expect(questions).toHaveLength(CYBER_QUESTIONS.length);
+    for (const q of questions) {
+      expect(q).not.toHaveProperty("correctAnswer");
+      expect(q).not.toHaveProperty("explanation");
+    }
+    // Nothing from the key may appear anywhere in the response.
+    const raw = JSON.stringify(questions);
+    for (const q of CYBER_QUESTIONS) expect(raw).not.toContain(q.explanation);
+  });
+
+  it("serves a signed-in instructor the full bank, to edit", async () => {
+    const { token } = (await (await login("10.0.0.7")).json()) as { token: string };
+    const res = await fetch(`${BASE}/api/questions`, { headers: authHeaders(token) });
+    const { questions } = (await res.json()) as { questions: any[] };
+    expect(questions[0]).toHaveProperty("correctAnswer");
+    expect(questions[0]).toHaveProperty("explanation");
+  });
+
+  it("grades a solo-practice answer on the server", async () => {
+    const q = CYBER_QUESTIONS[0];
+    const check = (body: object) =>
+      fetch(`${BASE}/api/questions/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const right: any = await (await check({ questionId: q.id, answer: q.correctAnswer })).json();
+    expect(right).toEqual({ correct: true, correctAnswer: q.correctAnswer, explanation: q.explanation });
+
+    const wrong: any = await (await check({ questionId: q.id, answer: "nope" })).json();
+    expect(wrong.correct).toBe(false);
+
+    expect((await check({ questionId: "no-such-question", answer: "x" })).status).toBe(404);
+  });
+
+  it("only lets an instructor reset the bank", async () => {
+    const res = await fetch(`${BASE}/api/questions/reset`, { method: "POST" });
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("POST /api/auth/login", () => {
   it("rejects an incorrect password", async () => {
     const res = await login("10.0.0.1", "definitely-wrong");
@@ -122,7 +168,7 @@ describe("instructor-only routes", () => {
 });
 
 describe("session lifecycle", () => {
-  it("supports create → join → settings → start → score → end → delete", async () => {
+  it("supports create → join → settings → start → quiz → end → delete", async () => {
     const loginRes = await login("10.0.0.4");
     const { token } = (await loginRes.json()) as { token: string };
 
@@ -186,23 +232,42 @@ describe("session lifecycle", () => {
     expect(lockedRes.status).toBe(409);
 
     // Wrong player token is rejected.
-    const wrongToken = await fetch(`${BASE}/api/session/${code}/score`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ playerId, playerToken: "nope", score: 999, history: [] }),
-    });
-    expect(wrongToken.status).toBe(403);
+    const quizPost = (path: string, body: object) =>
+      fetch(`${BASE}/api/session/${code}/quiz/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect((await quizPost("next", { playerId, playerToken: "nope" })).status).toBe(403);
 
-    // Valid score submission.
-    const scoreRes = await fetch(`${BASE}/api/session/${code}/score`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ playerId, playerToken, score: 300, history: [] }),
-    });
-    expect(scoreRes.status).toBe(200);
+    // The server serves the question, without its answer key.
+    const nextRes = await quizPost("next", { playerId, playerToken });
+    expect(nextRes.status).toBe(200);
+    const served: any = await nextRes.json();
+    expect(served.total).toBe(5);
+    expect(served.question).not.toHaveProperty("correctAnswer");
+    expect(served.question).not.toHaveProperty("explanation");
+
+    // The server grades the answer and keeps the score.
+    const key = CYBER_QUESTIONS.find((q) => q.id === served.question.id)!.correctAnswer;
+    const answerRes = await quizPost("answer", { playerId, playerToken, answer: key });
+    expect(answerRes.status).toBe(200);
+    const graded: any = await answerRes.json();
+    expect(graded.correct).toBe(true);
+    expect(graded.score).toBeGreaterThanOrEqual(100);
 
     const afterScore: any = await (await fetch(`${BASE}/api/session/${code}`)).json();
-    expect(afterScore.players).toEqual([{ id: playerId, name: "Alice", score: 300 }]);
+    expect(afterScore.players).toEqual([{ id: playerId, name: "Alice", score: graded.score }]);
+
+    // A client can no longer report its own score.
+    const forged = await fetch(`${BASE}/api/session/${code}/score`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ playerId, playerToken, score: 100000, history: [] }),
+    });
+    expect(forged.status).toBe(404);
+    const afterForge: any = await (await fetch(`${BASE}/api/session/${code}`)).json();
+    expect(afterForge.players[0].score).toBe(graded.score);
 
     // End.
     const endRes = await fetch(`${BASE}/api/session/${code}/end`, {
