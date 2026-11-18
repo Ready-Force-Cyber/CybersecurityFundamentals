@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { cn } from "../lib/utils";
 import { WHEEL, roundInfo, winningTeams } from "../lib/gameshow";
-import { WheelFace, SEGMENT_ANGLE, SPIN_SECONDS } from "./Wheel";
+import { GameWheel, SEGMENT_ANGLE, SPIN_SECONDS } from "./Wheel";
 import type { GameShowView } from "../lib/api";
 
 // The host's projector view: designed to be read from the back of a classroom,
@@ -33,7 +33,13 @@ function Wheel({ landedIndex, spinning, reducedMotion }: WheelProps) {
     landedIndex === null ? 0 : -(landedIndex * SEGMENT_ANGLE + SEGMENT_ANGLE / 2);
   // Extra full turns make it feel like a real spin (skipped for reduced motion).
   const rotation = landedIndex === null ? 0 : target - (reducedMotion ? 0 : 360 * 5);
-  return <WheelFace rotation={rotation} duration={reducedMotion || !spinning ? 0 : SPIN_SECONDS} />;
+  return (
+    <GameWheel
+      rotation={rotation}
+      duration={reducedMotion || !spinning ? 0 : SPIN_SECONDS}
+      reducedMotion={reducedMotion}
+    />
+  );
 }
 
 export interface GameShowHostProps {

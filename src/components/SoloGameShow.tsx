@@ -16,7 +16,7 @@ import {
   applySpin,
   applyAnswer,
 } from "../lib/gameshow";
-import { WheelFace, nextWheelRotation, SPIN_SECONDS } from "./Wheel";
+import { GameWheel, nextWheelRotation, SPIN_SECONDS } from "./Wheel";
 
 // Solo practice as a one-player game show: spin the wheel to set what the
 // next question is worth, answer it, bank the points. Same wheel and scoring
@@ -311,9 +311,10 @@ export function SoloGameShow({
         {/* The wheel. On small screens it shrinks out of the way once a
             question is up, so the question is not pushed below the fold. */}
         <div className="flex flex-col items-center gap-3">
-          <WheelFace
+          <GameWheel
             rotation={rotation}
             duration={reducedMotion ? 0 : SPIN_SECONDS}
+            reducedMotion={reducedMotion}
             onTick={() => {
               const now = performance.now();
               if (now - lastTick.current < MIN_TICK_GAP_MS) return;
