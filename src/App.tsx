@@ -46,10 +46,12 @@ import {
   nextConceptId,
   CAMPAIGN_PASS_THRESHOLD,
 } from "./lib/campaign";
-import { standardsFor, standardsCoverage } from "./lib/standards";
+import { learnerStandardTags, standardsCoverage } from "./lib/standards";
+import { MAX_DISPLAY_NAME, looksLikeFullName } from "./lib/display-name";
 import { SoloMap, CONCEPTS } from "./components/SoloMap";
 import { AboutReadyForce } from "./components/AboutReadyForce";
 import { SoloGameShow } from "./components/SoloGameShow";
+import { GameShowStage } from "./components/GameShowStage";
 import { GameShowHost } from "./components/GameShowHost";
 import { GameShowPlayer } from "./components/GameShowPlayer";
 import {
@@ -201,6 +203,12 @@ export default function App() {
   // accommodation. Note the `??`: `||` would treat 0 as missing and silently
   // fall back to a timed value.
   const activeTimePerQuestion = roomData?.timePerQuestion ?? timePerQuestion;
+
+  /** Screens that show the game-show stage rather than the cyber background. */
+  const isGameShowScreen =
+    (gameState === "playing" && !inLiveQuiz) ||
+    gameState === "gameshow_play" ||
+    (gameState === "hosting" && roomData?.mode === "gameshow" && roomData?.status === "started");
   const isUntimed = activeTimePerQuestion === 0;
 
   const filteredQuestions = useMemo(() => {
@@ -1035,9 +1043,13 @@ export default function App() {
           : "bg-[#050505] text-slate-100 selection:bg-blue-500/30 overflow-hidden",
       )}
     >
+      {/* Every game-show screen — solo play, the class projector and a
+          student's team view — stands on the same studio stage. */}
+      {isGameShowScreen && <GameShowStage />}
+
       {/* Animated Background — purely decorative, so it is dropped entirely
           when the user has asked for reduced motion. */}
-      {!prefersReducedMotion && gameState !== "login" && gameState !== "lobby" && gameState !== "admin_dashboard" && gameState !== "waiting" && gameState !== "hosting" && gameState !== "campaign" && (
+      {!isGameShowScreen && !prefersReducedMotion && gameState !== "login" && gameState !== "lobby" && gameState !== "admin_dashboard" && gameState !== "waiting" && gameState !== "hosting" && gameState !== "campaign" && (
         <div className="fixed inset-0 z-0 pointer-events-none">
           {/* Animated Grid */}
           <div className="absolute inset-0 [mask-image:linear-gradient(to_bottom,white,transparent)]">
@@ -1265,7 +1277,7 @@ export default function App() {
                       </h3>
                       <p className="text-sm text-slate-500 leading-relaxed">
                         Your teacher will share a 6-letter session code. Type it
-                        in with your name and you're ready to play together.
+                        in with a first name or nickname and you're ready to play together.
                       </p>
                     </div>
 
@@ -1275,18 +1287,34 @@ export default function App() {
                           htmlFor="student-name"
                           className="block text-xs font-semibold text-slate-700 uppercase tracking-wider ml-1"
                         >
-                          Your Name
+                          Name to show
                         </label>
                         <input
                           id="student-name"
                           type="text"
-                          placeholder="First & Last Name"
+                          placeholder="First name or nickname"
                           required
-                          maxLength={20}
+                          autoComplete="off"
+                          maxLength={MAX_DISPLAY_NAME}
+                          aria-describedby="student-name-hint"
                           value={guestName}
                           onChange={(e) => setGuestName(e.target.value)}
                           className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-slate-900 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
                         />
+                        {/* Model the data minimisation the course teaches: ask
+                            for the least we need. A nudge, never a block. */}
+                        <p
+                          id="student-name-hint"
+                          aria-live="polite"
+                          className={cn(
+                            "text-xs ml-1",
+                            looksLikeFullName(guestName) ? "text-amber-700 font-medium" : "text-slate-500",
+                          )}
+                        >
+                          {looksLikeFullName(guestName)
+                            ? "That looks like a full name. A first name or nickname is enough."
+                            : "Not your full name. Your class will see this on the leaderboard."}
+                        </p>
                       </div>
                       <div className="space-y-2">
                         <label
@@ -2489,23 +2517,28 @@ export default function App() {
                         >
                           {currentQuestion.explanation}
                         </motion.p>
-                        {/* Framework alignment — shows learners that this maps
-                            to recognised industry standards. */}
+                        {/* Standards alignment: the student-learning anchor and
+                            the workforce anchor Project AIDE asks for. */}
                         {(() => {
-                          const s = standardsFor(currentQuestion);
-                          const tags = [...(s.securityPlus ?? []), ...(s.nice ?? [])];
+                          const tags = learnerStandardTags(currentQuestion);
                           if (tags.length === 0) return null;
                           return (
-                            <div className="flex flex-wrap gap-2 pt-1">
+                            <ul className="flex flex-wrap gap-2 pt-1" aria-label="Standards this question covers">
                               {tags.map((tag) => (
-                                <span
-                                  key={tag}
-                                  className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-[10px] font-semibold text-slate-400"
+                                <li
+                                  key={tag.label}
+                                  title={tag.title}
+                                  className={cn(
+                                    "px-2 py-1 rounded-lg border text-[10px] font-semibold",
+                                    tag.anchor === "student"
+                                      ? "bg-sky-400/10 border-sky-400/30 text-sky-200"
+                                      : "bg-white/5 border-white/10 text-slate-400",
+                                  )}
                                 >
-                                  {tag}
-                                </span>
+                                  {tag.label}
+                                </li>
                               ))}
-                            </div>
+                            </ul>
                           );
                         })()}
                       </div>
@@ -3082,14 +3115,23 @@ export default function App() {
                           <div>
                             <h3 className="text-lg font-bold text-slate-800">Standards Coverage</h3>
                             <p className="text-sm text-slate-500">
-                              Framework alignment of the {bankQuestions.length}-question bank, at domain level.
+                              Alignment of the {bankQuestions.length}-question bank to both anchors Project AIDE
+                              asks for: student-learning standards and the workforce framework.
+                            </p>
+                            <p className="text-xs text-slate-400 mt-1">
+                              Student-standard identifiers follow AIDE's K-12 crosswalk and are representative:
+                              confirm them against the current published standards, and add your state's
+                              CS / digital-literacy standards.
                             </p>
                           </div>
                           {(() => {
                             const coverage = standardsCoverage(bankQuestions);
                             const groups = [
-                              { label: "CompTIA Security+ (SY0-701)", rows: coverage.securityPlus },
-                              { label: "NICE Framework", rows: coverage.nice },
+                              { label: "Student · CSTA K-12 CS Standards", rows: coverage.csta },
+                              { label: "Student · ISTE Standards for Students", rows: coverage.iste },
+                              { label: "Student · CYBER.ORG K-12 Cybersecurity", rows: coverage.cyberOrg },
+                              { label: "Workforce · NICE Framework", rows: coverage.nice },
+                              { label: "Workforce · CompTIA Security+ (SY0-701)", rows: coverage.securityPlus },
                             ];
                             return (
                               <div className="grid md:grid-cols-2 gap-6">

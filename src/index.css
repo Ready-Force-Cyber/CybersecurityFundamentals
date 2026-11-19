@@ -5,6 +5,118 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+/* Game-show wheel lights. Decorative only; switched off for reduced motion. */
+@keyframes wheel-bulb-chase {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; filter: drop-shadow(0 0 4px #fde68a); }
+}
+@keyframes wheel-bulb-flash {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 5px #fde68a); }
+  50% { opacity: 0.35; }
+}
+@keyframes wheel-winner-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.wheel-bulb-idle { opacity: 0.55; }
+.wheel-bulb-chase { animation: wheel-bulb-chase 0.36s linear infinite; }
+.wheel-bulb-flash { animation: wheel-bulb-flash 0.5s ease-in-out 4; }
+.wheel-winner { animation: wheel-winner-pulse 0.9s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .wheel-bulb-chase,
+  .wheel-bulb-flash,
+  .wheel-winner { animation: none; opacity: 1; filter: none; }
+}
+
+/* Game-show stage backdrop (GameShowStage). Decorative; still for reduced motion. */
+/* Each beam is a cone (the ::before, clipped) inside a blurred, rotating
+   wrapper — blurring the wrapper softens the cone's edges, which clipping
+   the blurred element itself would cut hard again. */
+.stage-beam {
+  position: absolute;
+  top: -12vh;
+  width: 34vw;
+  min-width: 260px;
+  height: 125vh;
+  transform-origin: 50% 0%;
+  filter: blur(20px);
+  mix-blend-mode: screen;
+}
+.stage-beam::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(45% 0, 55% 0, 100% 100%, 0 100%);
+  background: var(--beam);
+}
+.stage-beam-left {
+  left: 2vw;
+  --beam: linear-gradient(to bottom, rgba(253, 230, 138, 0.38), rgba(253, 230, 138, 0.08) 65%, transparent);
+  animation: stage-sweep-left 9s ease-in-out infinite alternate;
+}
+.stage-beam-right {
+  right: 2vw;
+  --beam: linear-gradient(to bottom, rgba(125, 211, 252, 0.34), rgba(125, 211, 252, 0.07) 65%, transparent);
+  animation: stage-sweep-right 11s ease-in-out infinite alternate;
+}
+.stage-beam-centre {
+  left: 50%;
+  margin-left: -17vw;
+  --beam: linear-gradient(to bottom, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.03) 55%, transparent);
+  animation: stage-sweep-centre 13s ease-in-out infinite alternate;
+}
+@keyframes stage-sweep-left {
+  from { transform: rotate(-24deg); }
+  to { transform: rotate(-4deg); }
+}
+@keyframes stage-sweep-right {
+  from { transform: rotate(22deg); }
+  to { transform: rotate(4deg); }
+}
+@keyframes stage-sweep-centre {
+  from { transform: rotate(-9deg); }
+  to { transform: rotate(9deg); }
+}
+
+.stage-marquee {
+  background-image: radial-gradient(circle, rgba(253, 230, 138, 0.95) 0 2.5px, rgba(253, 230, 138, 0.25) 3.5px, transparent 5px);
+  background-size: 28px 12px;
+  background-position: 0 50%;
+  animation: stage-marquee-chase 1.2s steps(2) infinite;
+}
+@keyframes stage-marquee-chase {
+  to { background-position: 28px 50%; }
+}
+
+.stage-floor {
+  background-image:
+    linear-gradient(to right, rgba(56, 189, 248, 0.35) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(56, 189, 248, 0.35) 1px, transparent 1px);
+  background-size: 64px 64px;
+  transform: rotateX(62deg);
+  animation: stage-floor-scroll 3.5s linear infinite;
+}
+@keyframes stage-floor-scroll {
+  to { background-position: 0 64px; }
+}
+
+.stage-sparkle {
+  opacity: 0.15;
+  box-shadow: 0 0 6px rgba(253, 230, 138, 0.9);
+  animation: stage-twinkle 3.2s ease-in-out infinite;
+}
+@keyframes stage-twinkle {
+  0%, 100% { opacity: 0.12; transform: scale(0.8); }
+  50% { opacity: 0.9; transform: scale(1.3); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-beam,
+  .stage-marquee,
+  .stage-floor,
+  .stage-sparkle { animation: none; }
+}
+
 @layer utilities {
   .custom-scrollbar::-webkit-scrollbar {
     width: 4px;

@@ -57,6 +57,17 @@ describe("RoomDO", () => {
     });
   });
 
+  it("stores a cleaned, length-capped display name", async () => {
+    const room = new RoomDO(fakeState());
+    await room.fetch(req("create", { code: "NAMES1" }));
+    await room.fetch(req("join", { name: "  Red    Fox  " }));
+    await room.fetch(req("join", { name: "x".repeat(60) }));
+    const state: any = await (await room.fetch(req("state"))).json();
+    expect(state.players.map((p: any) => p.name).sort()).toEqual(["Red Fox", "x".repeat(20)]);
+    const blank = await room.fetch(req("join", { name: "   " }));
+    expect(blank.status).toBe(400);
+  });
+
   it("falls back to defaults for an invalid difficulty and missing settings", async () => {
     const room = new RoomDO(fakeState());
     await room.fetch(req("create", { code: "X", difficulty: "impossible" }));

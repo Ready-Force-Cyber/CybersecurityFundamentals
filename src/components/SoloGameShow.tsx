@@ -4,7 +4,7 @@ import confetti from "canvas-confetti";
 import { AlertTriangle, CheckCircle2, ChevronRight, LogOut, XCircle, Zap } from "lucide-react";
 import { cn } from "../lib/utils";
 import { audio } from "../lib/audio";
-import { standardsFor } from "../lib/standards";
+import { learnerStandardTags } from "../lib/standards";
 import type { Question } from "../constants";
 import type { AnswerReveal } from "../lib/api";
 import {
@@ -16,7 +16,7 @@ import {
   applySpin,
   applyAnswer,
 } from "../lib/gameshow";
-import { WheelFace, nextWheelRotation } from "./Wheel";
+import { WheelFace, nextWheelRotation, SPIN_SECONDS } from "./Wheel";
 
 // Solo practice as a one-player game show: spin the wheel to set what the
 // next question is worth, answer it, bank the points. Same wheel and scoring
@@ -45,7 +45,8 @@ export interface SoloGameShowProps {
 
 type Stage = "idle" | "spinning" | "hazard" | "question" | "checking" | "feedback";
 
-const SPIN_SECONDS = 2.4;
+/** Fewest milliseconds between tick sounds, so a fast spin clicks, not buzzes. */
+const MIN_TICK_GAP_MS = 45;
 
 /**
  * Ref callback that focuses an element when it mounts, without scrolling.
@@ -86,13 +87,11 @@ export function SoloGameShow({
   const history = useRef<SoloHistoryEntry[]>([]);
   const shownAt = useRef(0);
   const landTimer = useRef<number | null>(null);
-  const tickTimer = useRef<number | null>(null);
+  const lastTick = useRef(0);
 
   const stopTimers = () => {
     if (landTimer.current !== null) window.clearTimeout(landTimer.current);
-    if (tickTimer.current !== null) window.clearInterval(tickTimer.current);
     landTimer.current = null;
-    tickTimer.current = null;
   };
   useEffect(() => stopTimers, []);
 
@@ -139,7 +138,8 @@ export function SoloGameShow({
     if (reducedMotion) {
       land();
     } else {
-      tickTimer.current = window.setInterval(() => audio.playTick(), 130);
+      // The wheel's own ticks (one per segment passing the pointer) drive
+      // the sound; this timer only lands the result once it has stopped.
       landTimer.current = window.setTimeout(land, SPIN_SECONDS * 1000);
     }
   };
@@ -231,7 +231,7 @@ export function SoloGameShow({
   return (
     <div ref={root} className="flex-1 flex flex-col gap-5 scroll-mt-4">
       {/* Header: what you're playing, where you are, your score */}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl border border-white/10 bg-slate-950/70 backdrop-blur-sm p-4">
         {/* On a phone the title gets its own row, so it is not squeezed to
             a couple of letters by the progress and score beside it. */}
         <div className="min-w-0 basis-full sm:basis-0 sm:flex-1">
@@ -314,6 +314,12 @@ export function SoloGameShow({
           <WheelFace
             rotation={rotation}
             duration={reducedMotion ? 0 : SPIN_SECONDS}
+            onTick={() => {
+              const now = performance.now();
+              if (now - lastTick.current < MIN_TICK_GAP_MS) return;
+              lastTick.current = now;
+              audio.playTick();
+            }}
             className={cn(
               "transition-[width] duration-300 lg:w-[300px]",
               showingQuestion ? "w-28" : "w-64 sm:w-72",
@@ -336,7 +342,7 @@ export function SoloGameShow({
                 initial={reducedMotion ? false : { opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={reducedMotion ? undefined : { opacity: 0 }}
-                className="rounded-3xl border border-white/10 bg-white/5 p-6 sm:p-8 text-center space-y-5"
+                className="rounded-3xl border border-white/10 bg-slate-950/70 backdrop-blur-sm p-6 sm:p-8 text-center space-y-5"
               >
                 <div className="space-y-2">
                   <h2 className="text-2xl sm:text-3xl font-black text-white">
@@ -383,10 +389,10 @@ export function SoloGameShow({
                 animate={{ opacity: 1, scale: 1 }}
                 exit={reducedMotion ? undefined : { opacity: 0 }}
                 className={cn(
-                  "rounded-3xl border p-6 sm:p-8 text-center space-y-5",
+                  "rounded-3xl border p-6 sm:p-8 text-center space-y-5 backdrop-blur-sm",
                   segment.kind === "double"
-                    ? "border-amber-400/40 bg-amber-400/10"
-                    : "border-rose-400/30 bg-rose-500/10",
+                    ? "border-amber-400/40 bg-[#1c1606]/85"
+                    : "border-rose-400/30 bg-[#1f0a10]/85",
                 )}
               >
                 <div className="flex justify-center">
@@ -418,7 +424,7 @@ export function SoloGameShow({
                 exit={reducedMotion ? undefined : { opacity: 0 }}
                 className="space-y-4"
               >
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-5 sm:p-7 space-y-5">
+                <div className="rounded-3xl border border-white/10 bg-slate-950/70 backdrop-blur-sm p-5 sm:p-7 space-y-5">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="px-3 py-1 rounded-full bg-amber-400 text-black text-sm font-black">
                       {segment?.kind === "points" ? `${segment.value} points` : "Question"}
@@ -505,7 +511,8 @@ export function SoloGameShow({
                     animate={{ opacity: 1, y: 0 }}
                     className={cn(
                       "rounded-3xl border p-5 sm:p-6 space-y-3",
-                      reveal.correct ? "border-emerald-400/40 bg-emerald-500/10" : "border-rose-400/40 bg-rose-500/10",
+                      "backdrop-blur-sm",
+                      reveal.correct ? "border-emerald-400/40 bg-[#061a12]/85" : "border-rose-400/40 bg-[#1f0a10]/85",
                     )}
                   >
                     <p className={cn("text-xl font-black", reveal.correct ? "text-emerald-300" : "text-rose-300")}>
@@ -563,16 +570,24 @@ function hazardText(
   return { title: "Lose a Turn", body: "No question on this spin. Nothing lost; spin again." };
 }
 
-/** Framework alignment for the question just answered. */
+/** Standards alignment for the question just answered: student, then workforce. */
 function StandardsTags({ question }: { question: Question }) {
-  const s = standardsFor(question);
-  const tags = [...(s.securityPlus ?? []), ...(s.nice ?? [])];
+  const tags = learnerStandardTags(question);
   if (tags.length === 0) return null;
   return (
-    <ul className="flex flex-wrap gap-2">
+    <ul className="flex flex-wrap gap-2" aria-label="Standards this question covers">
       {tags.map((tag) => (
-        <li key={tag} className="rounded-full border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
-          {tag}
+        <li
+          key={tag.label}
+          title={tag.title}
+          className={cn(
+            "rounded-full border px-2.5 py-1 text-[11px] font-semibold",
+            tag.anchor === "student"
+              ? "border-sky-400/30 bg-sky-400/10 text-sky-200"
+              : "border-white/15 bg-white/5 text-slate-300",
+          )}
+        >
+          {tag.label}
         </li>
       ))}
     </ul>
