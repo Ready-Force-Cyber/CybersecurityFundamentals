@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Component, Suspense, lazy, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   motion,
   animate,
@@ -6,6 +6,7 @@ import {
   useMotionValueEvent,
   useTransform,
   useVelocity,
+  type MotionValue,
 } from "motion/react";
 import { cn } from "../lib/utils";
 import { WHEEL } from "../lib/gameshow";
@@ -28,7 +29,7 @@ const OVERSHOOT_DEGREES = 7;
 const BULBS = 24;
 
 /** Wheel segment colours, alternating so slices are distinguishable. */
-function segmentFill(index: number, kind: string) {
+export function segmentFill(index: number, kind: string) {
   if (kind === "bankrupt") return "#0f172a";
   if (kind === "lose_turn") return "#7f1d1d";
   if (kind === "double") return "#a16207";
@@ -66,20 +67,36 @@ export function nextWheelRotation(current: number, landedIndex: number, turns = 
   return base + delta;
 }
 
-export interface WheelFaceProps {
-  /** Rotation in degrees; the pointer is at the top. */
-  rotation: number;
-  /** Seconds the wheel takes to reach `rotation`; 0 jumps straight there. */
-  duration: number;
-  /** Called each time a segment boundary passes the pointer while spinning. */
-  onTick?: () => void;
-  /** Sizing classes for the square wrapper; the wheel fills it. */
-  className?: string;
+/**
+ * How far the flapper pointer is knocked sideways, in degrees, for a wheel
+ * rotation and spin direction (1 = clockwise). A boundary passing the pointer
+ * knocks it against the direction of travel; it springs back across the rest
+ * of the segment. Positive is clockwise, as in CSS.
+ */
+export function flapperTilt(rotation: number, direction: number): number {
+  const frac = (((-rotation % SEGMENT_ANGLE) + SEGMENT_ANGLE) % SEGMENT_ANGLE) / SEGMENT_ANGLE;
+  const nearBoundary = direction > 0 ? 1 - frac : frac;
+  return nearBoundary < 0.22 ? -direction * 26 * (1 - nearBoundary / 0.22) : 0;
 }
 
-/** The wheel itself: pointer, rim lights and the rotating face. */
-export function WheelFace({ rotation, duration, onTick, className }: WheelFaceProps) {
-  const R = 150;
+export interface WheelSpin {
+  /** The wheel's rotation in degrees, animated. Read it per frame. */
+  rot: MotionValue<number>;
+  spinning: boolean;
+  /** True once the wheel has stopped on a result. */
+  settled: boolean;
+  /** 1 while turning clockwise, -1 anticlockwise. A ref: read it per frame. */
+  direction: { current: number };
+  /** The segment under the pointer once settled, else null. */
+  landedIndex: number | null;
+}
+
+/**
+ * The spin itself, shared by the 2D and 3D wheels so both move by the same
+ * rules and stop on the same segment: a fast start, a long coast, a small
+ * overshoot past the target, then a settle back onto it.
+ */
+export function useWheelSpin(rotation: number, duration: number, onTick?: () => void): WheelSpin {
   const rot = useMotionValue(rotation);
   const [spinning, setSpinning] = useState(false);
   const [settled, setSettled] = useState(false);
@@ -91,8 +108,6 @@ export function WheelFace({ rotation, duration, onTick, className }: WheelFacePr
   const onTickRef = useRef(onTick);
   onTickRef.current = onTick;
 
-  // Drive the wheel to each new rotation: a fast start, a long coast, a small
-  // overshoot past the target, then a settle back onto it.
   useEffect(() => {
     const from = rot.get();
     if (from === rotation) return;
@@ -130,19 +145,33 @@ export function WheelFace({ rotation, duration, onTick, className }: WheelFacePr
     }
   });
 
+  return { rot, spinning, settled, direction, landedIndex: settled ? segmentAtPointer(rotation) : null };
+}
+
+export interface WheelFaceProps {
+  /** Rotation in degrees; the pointer is at the top. */
+  rotation: number;
+  /** Seconds the wheel takes to reach `rotation`; 0 jumps straight there. */
+  duration: number;
+  /** Called each time a segment boundary passes the pointer while spinning. */
+  onTick?: () => void;
+  /** Sizing classes for the square wrapper; the wheel fills it. */
+  className?: string;
+}
+
+/** The wheel itself: pointer, rim lights and the rotating face. */
+export function WheelFace({ rotation, duration, onTick, className }: WheelFaceProps) {
+  const R = 150;
+  const { rot, spinning, settled, direction, landedIndex } = useWheelSpin(rotation, duration, onTick);
+
   // The pointer is a flapper: it is knocked sideways as each boundary passes
   // and springs back while the wheel crosses the segment.
-  const pointerTilt = useTransform(rot, (r) => {
-    const frac = (((-r % SEGMENT_ANGLE) + SEGMENT_ANGLE) % SEGMENT_ANGLE) / SEGMENT_ANGLE;
-    const nearBoundary = direction.current > 0 ? 1 - frac : frac;
-    return nearBoundary < 0.22 ? -direction.current * 26 * (1 - nearBoundary / 0.22) : 0;
-  });
+  const pointerTilt = useTransform(rot, (r) => flapperTilt(r, direction.current));
 
   // A little motion blur at full speed, gone well before the wheel stops.
   const velocity = useVelocity(rot);
   const blur = useTransform(velocity, (v) => `blur(${Math.min(1.6, Math.abs(v) / 900).toFixed(2)}px)`);
 
-  const landedIndex = settled ? segmentAtPointer(rotation) : null;
   const VIEW = R * 2 + 36; // room for the rim and bulbs
   const C = VIEW / 2;
 
@@ -232,5 +261,63 @@ export function WheelFace({ rotation, duration, onTick, className }: WheelFacePr
         <circle cx={C} cy={C} r="9" className={spinning ? "fill-amber-300" : "fill-amber-500"} />
       </svg>
     </div>
+  );
+}
+
+// ---- 3D ---------------------------------------------------------------------
+
+// The 3D wheel and Three.js load only when a game-show screen first needs
+// them, so the rest of the app (and solo practice on a device without WebGL)
+// never downloads them.
+const Wheel3D = lazy(() => import("./Wheel3D"));
+
+let webglSupport: boolean | null = null;
+/** Whether this browser can create a WebGL context. Checked once. */
+function canUseWebGL(): boolean {
+  if (webglSupport !== null) return webglSupport;
+  try {
+    const canvas = document.createElement("canvas");
+    webglSupport = !!(canvas.getContext("webgl2") || canvas.getContext("webgl"));
+  } catch {
+    webglSupport = false;
+  }
+  return webglSupport;
+}
+
+/** Falls back to the 2D wheel if the 3D one fails (e.g. the GPU context is lost). */
+class FallbackOnError extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    console.warn("3D wheel unavailable, using the 2D wheel:", error);
+  }
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
+export interface GameWheelProps extends WheelFaceProps {
+  /** Calm the scene: no light chase or camera movement. */
+  reducedMotion?: boolean;
+}
+
+/**
+ * The wheel to put on screen: the 3D studio wheel where the device supports
+ * WebGL, otherwise the 2D wheel. The 2D wheel also shows while the 3D one
+ * loads, so there is never an empty space. Both are driven by the same
+ * rotation, so they always agree on the result.
+ */
+export function GameWheel(props: GameWheelProps) {
+  const [use3D] = useState(canUseWebGL);
+  const flat = <WheelFace {...props} />;
+  if (!use3D) return flat;
+  return (
+    <FallbackOnError fallback={flat}>
+      <Suspense fallback={flat}>
+        <Wheel3D {...props} />
+      </Suspense>
+    </FallbackOnError>
   );
 }
