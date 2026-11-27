@@ -111,8 +111,21 @@ export const api = {
   resetQuestions: (): Promise<{ questions: any[] }> =>
     req("/api/questions/reset", { method: "POST", body: "{}" }, true),
 
-  saveQuestions: (questions: any[]): Promise<{ questions: any[] }> =>
+  /** Replace the whole bank (instructor only). The server checks every question first. */
+  replaceQuestions: (questions: unknown[]): Promise<{ questions: any[] }> =>
     req("/api/questions", { method: "PUT", body: JSON.stringify({ questions }) }, true),
+
+  /** Add one question (instructor only). Returns it with its new id, and the bank. */
+  addQuestion: (question: unknown): Promise<{ question: any; questions: any[] }> =>
+    req("/api/questions", { method: "POST", body: JSON.stringify({ question }) }, true),
+
+  /** Replace one question (instructor only). */
+  updateQuestion: (id: string, question: unknown): Promise<{ question: any; questions: any[] }> =>
+    req(`/api/questions/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ question }) }, true),
+
+  /** Remove one question (instructor only). */
+  deleteQuestion: (id: string): Promise<{ question: any; questions: any[] }> =>
+    req(`/api/questions/${encodeURIComponent(id)}`, { method: "DELETE" }, true),
 
   createSession: (settings: {
     difficulty: string;
@@ -121,6 +134,7 @@ export const api = {
     hostName?: string;
     mode?: "quiz" | "gameshow";
     teamCount?: number;
+    rounds?: number;
   }): Promise<{ code: string }> =>
     req("/api/session", { method: "POST", body: JSON.stringify(settings) }, true),
 

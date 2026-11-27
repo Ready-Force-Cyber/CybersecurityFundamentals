@@ -120,6 +120,51 @@ describe("answer key exposure", () => {
   });
 });
 
+describe("question bank editing", () => {
+  const newQuestion = {
+    concept: "integrity",
+    difficulty: "easy",
+    question: "A file's checksum changed after download. What does that suggest?",
+    options: ["The file was altered", "The file is faster", "The file is encrypted", "Nothing at all"],
+    correctAnswer: "The file was altered",
+    explanation: "A different checksum means the contents are not what was published.",
+  };
+
+  it("adds, edits and removes one question, and the bank reflects each change", async () => {
+    const send = (path: string, method: string, body?: unknown, token?: string) =>
+      fetch(`${BASE}${path}`, {
+        method,
+        headers: token ? authHeaders(token) : { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+
+    expect((await send("/api/questions", "POST", { question: newQuestion })).status).toBe(401);
+    const { token } = (await (await login("10.0.0.31")).json()) as { token: string };
+    const startCount = ((await (await send("/api/questions", "GET", undefined, token)).json()) as any).questions.length;
+
+    const added = await send("/api/questions", "POST", { question: newQuestion }, token);
+    expect(added.status).toBe(201);
+    const { question } = (await added.json()) as any;
+
+    const bank: any = await (await send("/api/questions", "GET", undefined, token)).json();
+    expect(bank.questions).toHaveLength(startCount + 1);
+    expect(bank.questions.find((q: any) => q.id === question.id).correctAnswer).toBe("The file was altered");
+
+    const edited = await send(`/api/questions/${question.id}`, "PUT", { question: { ...newQuestion, difficulty: "medium" } }, token);
+    expect(((await edited.json()) as any).question.difficulty).toBe("medium");
+
+    const refused = await send("/api/questions", "POST", { question: { ...newQuestion, options: ["Only one"] } }, token);
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as any).error).toMatch(/at least two/);
+
+    const removed = await send(`/api/questions/${question.id}`, "DELETE", undefined, token);
+    expect(removed.status).toBe(200);
+    const after: any = await (await send("/api/questions", "GET", undefined, token)).json();
+    expect(after.questions).toHaveLength(startCount);
+    expect(after.questions.some((q: any) => q.id === question.id)).toBe(false);
+  });
+});
+
 describe("POST /api/auth/login", () => {
   it("rejects an incorrect password", async () => {
     const res = await login("10.0.0.1", "definitely-wrong");

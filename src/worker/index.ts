@@ -107,12 +107,40 @@ api.post("/questions/reset", async (c) => {
   return proxy(await callDO(globalStub(c.env), "questions:reset", {}));
 });
 
+// Replace the whole bank. The Durable Object checks every question first.
 api.put("/questions", async (c) => {
   if (!(await isInstructor(c.env, c.req.header("Authorization")))) {
     return c.json({ error: "Instructor sign-in required." }, 401);
   }
   const body = await c.req.json().catch(() => ({}) as any);
   return proxy(await callDO(globalStub(c.env), "questions:set", { questions: body.questions }));
+});
+
+// Add, edit and remove one question at a time. The change happens inside the
+// Durable Object, so two instructors editing at once can't overwrite each other.
+api.post("/questions", async (c) => {
+  if (!(await isInstructor(c.env, c.req.header("Authorization")))) {
+    return c.json({ error: "Instructor sign-in required." }, 401);
+  }
+  const body = await c.req.json().catch(() => ({}) as any);
+  return proxy(await callDO(globalStub(c.env), "questions:add", { question: body.question }));
+});
+
+api.put("/questions/:id", async (c) => {
+  if (!(await isInstructor(c.env, c.req.header("Authorization")))) {
+    return c.json({ error: "Instructor sign-in required." }, 401);
+  }
+  const body = await c.req.json().catch(() => ({}) as any);
+  return proxy(
+    await callDO(globalStub(c.env), "questions:update", { id: c.req.param("id"), question: body.question }),
+  );
+});
+
+api.delete("/questions/:id", async (c) => {
+  if (!(await isInstructor(c.env, c.req.header("Authorization")))) {
+    return c.json({ error: "Instructor sign-in required." }, 401);
+  }
+  return proxy(await callDO(globalStub(c.env), "questions:delete", { id: c.req.param("id") }));
 });
 
 api.post("/session", async (c) => {

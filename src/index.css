@@ -140,3 +140,29 @@
 @media (prefers-reduced-motion: reduce) {
   .map-march { animation: none; }
 }
+
+/* Contestant podium (Podium). The bulbs chase faster while the wheel spins. */
+.podium-bulbs {
+  background-image: radial-gradient(circle, rgba(253, 230, 138, 0.95) 0 3px, rgba(253, 230, 138, 0.3) 4px, transparent 6px);
+  background-size: 24px 14px;
+  background-position: 0 50%;
+  animation: podium-bulb-chase 1.2s steps(2) infinite;
+}
+.podium-bulbs-fast { animation-duration: 0.28s; }
+@keyframes podium-bulb-chase {
+  to { background-position: 24px 50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .podium-bulbs { animation: none; }
+}
+
+/* Home slideshow (HomeHero): the active dot fills toward the next slide. */
+@keyframes hero-progress {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+.hero-progress {
+  animation-name: hero-progress;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}

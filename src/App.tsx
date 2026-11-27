@@ -49,6 +49,15 @@ import {
 import { learnerStandardTags, standardsCoverage } from "./lib/standards";
 import { MAX_DISPLAY_NAME, looksLikeFullName } from "./lib/display-name";
 import { SoloMap, CONCEPTS } from "./components/SoloMap";
+import { QuestionBankAdmin } from "./components/QuestionBankAdmin";
+import { HomeHero } from "./components/HomeHero";
+import { InstructorSignIn } from "./components/InstructorSignIn";
+import { SiteHeader } from "./components/SiteHeader";
+import { HostPanel } from "./components/admin/HostPanel";
+import { SessionsPanel } from "./components/admin/SessionsPanel";
+import { SettingsPanel } from "./components/admin/SettingsPanel";
+import { ConsoleTabs, type ConsoleTab } from "./components/admin/ConsoleTabs";
+import { DEFAULT_PREFS, loadPrefs, savePrefs, type InstructorPrefs } from "./lib/instructor-prefs";
 import { AboutReadyForce } from "./components/AboutReadyForce";
 import { SoloGameShow } from "./components/SoloGameShow";
 import { GameShowStage } from "./components/GameShowStage";
@@ -131,12 +140,18 @@ export default function App() {
   const [answerPending, setAnswerPending] = useState(false);
   /** Grading failed (e.g. offline); holds the answer so it can be retried. */
   const [answerError, setAnswerError] = useState<{ answer: string } | null>(null);
-  const [adminTab, setAdminTab] = useState<"sessions" | "questions" | "metrics">("sessions");
+  const [adminTab, setAdminTab] = useState<ConsoleTab>("host");
+  // The instructor's session setup and preferences, remembered in this browser.
+  const [prefs, setPrefs] = useState<InstructorPrefs>(loadPrefs);
+  const updatePrefs = (patch: Partial<InstructorPrefs>) =>
+    setPrefs((current) => {
+      const next = { ...current, ...patch };
+      savePrefs(next);
+      return next;
+    });
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsData, setMetricsData] = useState<any>(null);
   const [aiSuggestions, setAiSuggestions] = useState<{title: string, description: string}[] | null>(null);
-  const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
-  const [previewQuestion, setPreviewQuestion] = useState(false);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [score, setScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(20);
@@ -333,7 +348,14 @@ export default function App() {
     };
   }, [roomId, gameState, user?.isAnonymous]);
 
+  useEffect(() => {
+    audio.setEnabled(prefs.sound);
+  }, [prefs.sound]);
+
   // Question bank — fetched from the server (seeded from the built-in set).
+  // Fetched again when an instructor signs in or out: students get a copy
+  // without answers, the instructor gets the full bank to edit. Editing the
+  // student copy would save a bank with every answer missing.
   useEffect(() => {
     let cancelled = false;
     api
@@ -349,11 +371,11 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isAdmin]);
 
   // Admin dashboard — poll the list of active sessions.
   useEffect(() => {
-    if (gameState !== "admin_dashboard" || !isAdmin) return;
+    if (gameState !== "lobby" || !isAdmin) return;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -364,12 +386,14 @@ export default function App() {
       }
     };
     poll();
-    const interval = setInterval(poll, 2500);
+    // Quick updates while the instructor watches the list; slower otherwise,
+    // just to keep the tab's count current.
+    const interval = setInterval(poll, adminTab === "sessions" ? 2500 : 10000);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [gameState, isAdmin]);
+  }, [gameState, isAdmin, adminTab]);
 
   useEffect(() => {
     if (
@@ -484,18 +508,24 @@ export default function App() {
     }
   };
 
-  const createRoom = async (mode: "quiz" | "gameshow" = "quiz") => {
+  const createRoom = async () => {
     if (!isAdmin || isHosting) return;
     setHostError("");
     setIsHosting(true);
+    // The hosting screens read these, so match them to what's being started.
+    setDifficultyFilter(prefs.difficulty);
+    setNumberOfQuestions(prefs.questionCount);
+    setTimePerQuestion(prefs.timePerQuestion);
+    setGameShowTeamCount(prefs.teamCount);
     try {
       const { code } = await api.createSession({
-        difficulty: difficultyFilter,
-        questionCount: numberOfQuestions,
-        timePerQuestion,
+        difficulty: prefs.difficulty,
+        questionCount: prefs.questionCount,
+        timePerQuestion: prefs.timePerQuestion,
         hostName: user?.displayName || "Instructor",
-        mode,
-        teamCount: gameShowTeamCount,
+        mode: prefs.mode,
+        teamCount: prefs.teamCount,
+        rounds: prefs.rounds,
       });
       // The host monitors the session; they do not join as a player.
       setRoomId(code);
@@ -616,6 +646,28 @@ export default function App() {
     setGameState("lobby");
   };
 
+  // "Join my class" from the header or the slideshow: bring the join form
+  // into view and put the cursor in the name field.
+  const focusJoinForm = () => {
+    const field = document.getElementById("student-name");
+    field?.scrollIntoView({ block: "center", behavior: prefersReducedMotion ? "auto" : "smooth" });
+    field?.focus({ preventScroll: true });
+  };
+
+  // Cancelling before the start deletes the session, so it doesn't sit open
+  // on the server with students waiting in it for a quiz that won't begin.
+  const cancelHosting = async () => {
+    const code = roomId;
+    leaveHosting();
+    if (!code) return;
+    try {
+      await api.deleteSession(code);
+      setAllRooms((prev) => prev.filter((r) => r.id !== code));
+    } catch (e) {
+      console.error("Couldn't delete the cancelled session:", e);
+    }
+  };
+
   // Build the results CSV in the browser and hand it to the user as a
   // download — no server round-trip needed, the data is already loaded.
   const downloadResultsCsv = () => {
@@ -643,16 +695,6 @@ export default function App() {
     }
   };
 
-  const handleSeedQuestions = async () => {
-    if (!isAdmin) return;
-    try {
-      const { questions } = await api.resetQuestions();
-      setBankQuestions(questions as Question[]);
-    } catch (e) {
-      console.error("Error resetting questions:", e);
-    }
-  };
-
   const fetchMetricsAndAI = async () => {
     setMetricsLoading(true);
     try {
@@ -671,49 +713,15 @@ export default function App() {
     }
   };
 
-  const handleSaveQuestion = async (q: Question) => {
-    if (!isAdmin) return;
-    try {
-      if (!q.id) {
-        q.id = Math.random().toString(36).substring(2, 9);
-      }
-      const exists = bankQuestions.some((b) => b.id === q.id);
-      const next = exists
-        ? bankQuestions.map((b) => (b.id === q.id ? q : b))
-        : [...bankQuestions, q];
-      await api.saveQuestions(next);
-      setBankQuestions(next);
-      setEditingQuestion(null);
-    } catch (e) {
-      console.error("Error saving question:", e);
-    }
-  };
-
-  const handleDeleteQuestion = async (id: string) => {
-    if (!isAdmin) return;
-    try {
-      const next = bankQuestions.filter((b) => b.id !== id);
-      await api.saveQuestions(next);
-      setBankQuestions(next);
-    } catch (e) {
-      console.error("Error deleting question:", e);
-    }
-  };
-
   useEffect(() => {
-    if (adminTab === 'metrics' && !metricsData) {
+    if (adminTab === 'reports' && !metricsData) {
        fetchMetricsAndAI();
     }
   }, [adminTab]);
 
-  const handleDeleteRoom = async (roomIdToDelete: string) => {
-    if (!isAdmin) return;
-    try {
-      await api.deleteSession(roomIdToDelete);
-      setAllRooms(prev => prev.filter(r => r.id !== roomIdToDelete));
-    } catch (error) {
-       console.error("Failed to delete session:", error);
-    }
+  const handleDeleteRoom = async (code: string) => {
+    await api.deleteSession(code);
+    setAllRooms((prev) => prev.filter((r) => r.id !== code));
   };
 
   /** End of a round: show the results screen. */
@@ -1156,66 +1164,32 @@ export default function App() {
               exit={{ opacity: 0, scale: 1.05 }}
               className="flex-1 flex flex-col items-center w-full"
             >
-              <div className="max-w-5xl mx-auto w-full space-y-14 py-10">
-                {/* Hero */}
-                <div className="text-center space-y-6">
-                  <motion.img
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.4 }}
-                    src="/rfc-logo.svg"
-                    alt="Ready Force Cyber logo"
-                    className="w-28 h-28 md:w-36 md:h-36 mx-auto"
+              <div className="max-w-5xl mx-auto w-full space-y-14 pb-10">
+                {/* Site header, with the instructor sign-in at the right */}
+                <div className="relative z-20 !mb-8">
+                  <SiteHeader
+                    onJoinClass={focusJoinForm}
+                    onPracticeSolo={() => setGameState("campaign")}
+                    actions={
+                      <InstructorSignIn
+                        password={instructorPassword}
+                        onPasswordChange={(value) => {
+                          setInstructorPassword(value);
+                          if (loginError) setLoginError("");
+                        }}
+                        onSubmit={handleLogin}
+                        isAuthenticating={isAuthenticating}
+                        error={loginError}
+                      />
+                    }
                   />
-                  <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-blue-100 text-blue-700 font-semibold text-xs tracking-widest uppercase">
-                    <Shield className="w-3.5 h-3.5" />
-                    Ready Force Labs · Project AIDE
-                  </div>
-                  <h1 className="text-4xl md:text-5xl lg:text-6xl font-extrabold tracking-tight text-slate-900 px-4">
-                    Learn Cybersecurity{" "}
-                    <span className="text-blue-600">by Playing</span>
-                  </h1>
-                  <p className="text-slate-600 text-base md:text-xl max-w-2xl mx-auto px-4 leading-relaxed">
-                    Short, game-style missions that teach the five core concepts
-                    every digital citizen should know. Answer questions, beat the
-                    clock, and learn from instant feedback — no experience needed.
-                  </p>
-
-                  {/* What you'll learn */}
-                  <div className="pt-6 space-y-4">
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em]">
-                      The Five Core Concepts
-                    </p>
-                    <div className="max-w-4xl mx-auto px-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-                        {CONCEPTS.map((c, i) => (
-                          <motion.div
-                            key={c.id}
-                            initial={{ opacity: 0, y: 8 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.15 + i * 0.08 }}
-                            className="flex flex-col items-center gap-3 px-4 py-5 bg-white border border-slate-200 rounded-2xl shadow-sm hover:border-blue-200 hover:shadow-md transition-all"
-                          >
-                            <div className="w-10 h-10 rounded-xl bg-slate-50 border border-slate-100 text-blue-600 flex items-center justify-center">
-                              {CONCEPT_ICONS[c.id]}
-                            </div>
-                            <div className="space-y-1 text-center">
-                              <p className="text-[10px] font-bold text-slate-400 tracking-[0.2em]">
-                                {String(i + 1).padStart(2, "0")}
-                              </p>
-                              <p className="text-[13px] font-semibold text-slate-800 leading-tight">
-                                {c.name}
-                              </p>
-                            </div>
-                          </motion.div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
                 </div>
 
+                {/* Hero */}
+                <HomeHero onJoinClass={focusJoinForm} onPracticeSolo={() => setGameState("campaign")} />
+
                 {/* How it works */}
-                <div className="w-full max-w-4xl mx-auto space-y-6 px-4 md:px-0">
+                <div id="how-it-works" className="w-full max-w-4xl mx-auto space-y-6 px-4 md:px-0 scroll-mt-6">
                   <h2 className="text-center text-2xl font-extrabold tracking-tight text-slate-900">
                     How it works
                   </h2>
@@ -1401,60 +1375,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Teacher access */}
-                <div className="w-full max-w-4xl mx-auto px-4 md:px-0">
-                  <div className="flex flex-col md:flex-row items-center gap-6 p-8 bg-emerald-50/70 border border-emerald-200 rounded-3xl">
-                    <div className="w-12 h-12 bg-white text-emerald-600 rounded-xl flex items-center justify-center shrink-0 border border-emerald-100">
-                      <Lock className="w-6 h-6" />
-                    </div>
-                    <div className="flex-1 text-center md:text-left space-y-1">
-                      <h3 className="text-lg font-bold text-slate-900 tracking-tight">
-                        Teaching a class?
-                      </h3>
-                      <p className="text-sm text-slate-600">
-                        Enter the instructor password to host live sessions,
-                        manage the question bank, and see how your class is doing.
-                      </p>
-                    </div>
-                    <form onSubmit={handleLogin} className="shrink-0 text-center w-full md:w-auto">
-                      <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                        <label htmlFor="instructor-password" className="sr-only">
-                          Instructor password
-                        </label>
-                        <input
-                          id="instructor-password"
-                          type="password"
-                          placeholder="Instructor password"
-                          required
-                          autoComplete="current-password"
-                          value={instructorPassword}
-                          onChange={(e) => {
-                            setInstructorPassword(e.target.value);
-                            if (loginError) setLoginError("");
-                          }}
-                          className="w-full sm:w-56 bg-white border border-slate-200 rounded-2xl px-5 py-3.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium"
-                        />
-                        <motion.button
-                          whileHover={{ scale: 1.01 }}
-                          whileTap={{ scale: 0.99 }}
-                          type="submit"
-                          disabled={isAuthenticating}
-                          className="px-6 py-3.5 bg-emerald-600 text-white font-bold rounded-2xl hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
-                        >
-                          {isAuthenticating ? "Checking..." : "Sign In"}
-                        </motion.button>
-                      </div>
-                      <p
-                        className={cn(
-                          "text-[11px] font-medium mt-2",
-                          loginError ? "text-rose-600" : "text-slate-500",
-                        )}
-                      >
-                        {loginError || "Authorized instructors only"}
-                      </p>
-                    </form>
-                  </div>
-                </div>
               </div>
 
             </motion.div>
@@ -1466,240 +1386,308 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="flex-1 flex flex-col items-center justify-center py-12 space-y-12 w-full max-w-5xl mx-auto"
+              className="flex-1 flex flex-col w-full py-6 md:py-10 space-y-6"
             >
-              {/* Instructor bar — part of the page, so it scrolls away with
+              {/* Console header — part of the page, so it scrolls away with
                   the content instead of floating over it. */}
-              <div className="self-stretch flex items-center justify-end gap-4 px-4">
-                {isAdmin && (
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => setGameState("admin_dashboard")}
-                    className="px-4 py-2 bg-blue-100 text-blue-700 border border-blue-200 rounded-xl font-bold text-xs uppercase tracking-widest hidden sm:block shadow-sm hover:bg-blue-200 transition-colors"
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                <div className="space-y-2">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-100 text-blue-700 font-semibold text-[11px] tracking-widest uppercase">
+                    <Shield className="w-3.5 h-3.5" aria-hidden="true" /> Project AIDE · Instructor
+                  </div>
+                  <h2 className="text-3xl md:text-4xl font-extrabold tracking-tight text-slate-900">
+                    Instructor Console
+                  </h2>
+                  <p className="text-slate-600">
+                    Host a class session, manage the questions, and check how the app is running.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 self-end sm:self-start">
+                  <div className="text-right">
+                    <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest">Signed in</p>
+                    <p className="text-xs font-bold text-slate-900">{user?.displayName || "Instructor"}</p>
+                  </div>
+                  <button
+                    onClick={handleSignOut}
+                    className="inline-flex items-center gap-2 px-3 py-2 bg-white hover:bg-rose-50 rounded-xl text-slate-600 hover:text-rose-600 transition-colors border border-slate-200 shadow-sm text-sm font-bold"
                   >
-                    Admin Dashboard
-                  </motion.button>
-                )}
-                <div className="hidden sm:block text-right">
-                  <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
-                    Instructor
-                  </p>
-                  <p className="text-xs font-bold text-slate-900">
-                    {user?.displayName || "Instructor"}
-                  </p>
+                    <LogOut className="w-4 h-4" aria-hidden="true" /> Sign out
+                  </button>
                 </div>
-                <motion.button
-                  whileHover={{ scale: 1.1, rotate: 90 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={handleSignOut}
-                  className="p-2.5 bg-white hover:bg-rose-50 rounded-full text-slate-500 hover:text-rose-500 transition-all border border-slate-200 shadow-sm"
-                  title="Sign Out"
-                  aria-label="Sign out"
-                >
-                  <LogOut className="w-5 h-5" />
-                </motion.button>
               </div>
 
-              <div className="text-center space-y-4 max-w-2xl px-4">
-                 <div className="inline-block px-4 py-1.5 rounded-full bg-blue-100 text-blue-700 font-semibold text-xs tracking-widest uppercase mb-2">
-                    Project AIDE: Learning Operations
-                  </div>
-                <h2 className="text-4xl md:text-5xl font-extrabold tracking-tight text-slate-900">
-                  Assessment Control
-                </h2>
-                <p className="text-slate-600 text-base md:text-lg">
-                  Configure assessment parameters, select the difficulty level, and launch a new live session for your students.
-                </p>
-              </div>
+              <ConsoleTabs
+                active={adminTab}
+                onChange={setAdminTab}
+                badges={{
+                  sessions: allRooms.filter((r) => r.status !== "finished").length,
+                  questions: bankQuestions.length,
+                }}
+              />
 
-              {/* Difficulty Selection */}
-              {isAdmin && (
-                <div className="flex flex-col space-y-3 w-full max-w-4xl px-4 items-center">
-                  <p className="text-xs font-semibold text-slate-700 uppercase tracking-wider">Security Clearance Level</p>
-                  <div className="flex flex-wrap justify-center gap-4">
-                    {["all", "easy", "medium", "hard"].map((diff) => (
-                      <motion.button
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        key={diff}
-                        onClick={() => setDifficultyFilter(diff as any)}
-                        className={cn(
-                          "px-6 py-3 rounded-2xl font-semibold text-sm transition-all shadow-sm",
-                          difficultyFilter === diff
-                            ? "bg-blue-600 text-white shadow-md border border-blue-700"
-                            : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-slate-900",
-                        )}
-                      >
-                        {diff === "all" ? "Mixed" : diff.charAt(0).toUpperCase() + diff.slice(1)} Clearance
-                      </motion.button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Advanced Settings */}
-              {isAdmin && (
-                <div className="flex flex-col md:flex-row items-center gap-6 px-4 w-full max-w-4xl">
-                  <div className="flex flex-col gap-2 w-full md:w-auto">
-                    <p className="text-xs font-semibold text-slate-700 uppercase tracking-wider pl-2">
-                      Question Count
-                    </p>
-                    <div className="flex bg-slate-100 rounded-2xl p-1.5 border border-slate-200">
-                      {[5, 10, 15, 20].map((num) => (
-                        <button
-                          key={num}
-                          onClick={() => setNumberOfQuestions(num)}
-                          className={cn(
-                            "px-5 py-2.5 rounded-xl text-sm font-bold transition-all",
-                            numberOfQuestions === num
-                              ? "bg-white text-slate-900 shadow-sm border border-slate-200"
-                              : "text-slate-500 hover:text-slate-800",
-                          )}
-                        >
-                          {num}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-2 w-full md:w-auto">
-                    <p className="text-xs font-semibold text-slate-700 uppercase tracking-wider pl-2">
-                      Time per Question
-                    </p>
-                    <div className="flex bg-slate-100 rounded-2xl p-1.5 border border-slate-200">
-                      {[10, 20, 30, 45, 60, 0].map((time) => (
-                        <button
-                          key={time}
-                          onClick={() => setTimePerQuestion(time)}
-                          title={time === 0 ? "No time limit — accessibility accommodation" : undefined}
-                          className={cn(
-                            "px-5 py-2.5 rounded-xl text-sm font-bold transition-all",
-                            timePerQuestion === time
-                              ? "bg-white text-slate-900 shadow-sm border border-slate-200"
-                              : "text-slate-500 hover:text-slate-800",
-                          )}
-                        >
-                          {time === 0 ? "Untimed" : `${time}s`}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Host Action */}
-              <div className="w-full max-w-2xl px-4 mt-4">
-                <motion.button
-                  whileHover={{ scale: 1.01, translateY: -2 }}
-                  whileTap={{ scale: 0.99 }}
-                  onClick={() => createRoom("quiz")}
-                  className="group relative w-full flex flex-col md:flex-row items-center gap-6 p-8 md:p-10 bg-white border border-slate-200 rounded-3xl text-center md:text-left hover:shadow-xl hover:border-blue-200 transition-all shadow-md shadow-slate-200/50"
-                >
-                  <div className="p-5 bg-blue-50 text-blue-600 rounded-2xl group-hover:scale-110 group-hover:bg-blue-100 transition-all duration-300 shrink-0">
-                    <ShieldCheck className="w-8 h-8" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="text-2xl font-bold text-slate-900 mb-1">
-                      Host New Session
-                    </h3>
-                    <p className="text-sm text-slate-500">
-                      Generate a join code, share it with your students, and
-                      monitor the leaderboard live as they play.
-                    </p>
-                  </div>
-                  <div className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl flex items-center gap-2 shrink-0 group-hover:bg-blue-700 transition-colors">
-                    <Play className="w-5 h-5 fill-current" /> {isHosting ? "Starting..." : "Start"}
-                  </div>
-                </motion.button>
-                {hostError ? (
-                  <p className="text-center text-sm text-rose-600 mt-4 font-medium">
-                    {hostError}
-                  </p>
-                ) : (
-                  <p className="text-center text-xs text-slate-400 mt-4 font-medium">
-                    Students join from the home page using your session code.
-                  </p>
+              <div id="console-panel" role="tabpanel" aria-labelledby={`console-tab-${adminTab}`}>
+                {adminTab === "host" && (
+                  <HostPanel
+                    mode={prefs.mode}
+                    onModeChange={(mode) => updatePrefs({ mode })}
+                    difficulty={prefs.difficulty}
+                    onDifficultyChange={(difficulty) => updatePrefs({ difficulty })}
+                    questionCount={prefs.questionCount}
+                    onQuestionCountChange={(questionCount) => updatePrefs({ questionCount })}
+                    timePerQuestion={prefs.timePerQuestion}
+                    onTimePerQuestionChange={(timePerQuestion) => updatePrefs({ timePerQuestion })}
+                    teamCount={prefs.teamCount}
+                    onTeamCountChange={(teamCount) => updatePrefs({ teamCount })}
+                    rounds={prefs.rounds}
+                    onRoundsChange={(rounds) => updatePrefs({ rounds })}
+                    availability={difficultyAvailability(bankQuestions, null)}
+                    isHosting={isHosting}
+                    error={hostError}
+                    onStart={createRoom}
+                  />
                 )}
 
-                {/* Game-show mode: team play around a projected wheel. */}
-                <div className="mt-6 p-6 bg-slate-900 text-white rounded-3xl space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                    <div className="p-4 bg-amber-400/15 text-amber-300 rounded-2xl shrink-0">
-                      <Trophy className="w-7 h-7" />
-                    </div>
-                    <div className="flex-1">
-                      <h3 className="text-xl font-bold">Host a Game Show</h3>
-                      <p className="text-sm text-slate-400">
-                        Teams take turns spinning a wheel on the projector. Put this
-                        screen on the board and let students answer from their devices.
+                {adminTab === "sessions" && (
+                  <SessionsPanel
+                    sessions={allRooms.map((r) => ({ ...r, code: r.code ?? r.id }))}
+                    onDelete={handleDeleteRoom}
+                  />
+                )}
+
+                {adminTab === "questions" && (
+                  <QuestionBankAdmin questions={bankQuestions} onQuestionsChange={setBankQuestions} />
+                )}
+
+                {adminTab === "reports" && (
+                  <div className="space-y-5">
+                    <div>
+                      <h3 className="text-2xl font-bold text-slate-900 tracking-tight">Reports</h3>
+                      <p className="text-sm text-slate-500 mt-1">
+                        How students are doing across sessions, and how the question bank lines up with the standards.
                       </p>
                     </div>
-                  </div>
+                <div className="flex flex-col gap-6">
+                  {metricsLoading ? (
+                    <div className="p-12 text-center text-slate-500">Loading metrics...</div>
+                  ) : metricsData ? (
+                    <div className="space-y-8">
+                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                          <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm">
+                             <p className="text-xs font-bold text-slate-500 uppercase">Total Students</p>
+                             <p className="text-3xl font-bold text-blue-600 mt-2">{metricsData.totalStudents}</p>
+                          </div>
+                          <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm">
+                             <p className="text-xs font-bold text-slate-500 uppercase">Avg Score</p>
+                             <p className="text-3xl font-bold text-emerald-600 mt-2">{metricsData.averageScore}</p>
+                          </div>
+                          <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm">
+                             <p className="text-xs font-bold text-slate-500 uppercase">Total Attempts</p>
+                             <p className="text-3xl font-bold text-indigo-600 mt-2">{metricsData.totalQuestionsAttempted}</p>
+                          </div>
+                          <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm">
+                             <p className="text-xs font-bold text-slate-500 uppercase">Global Accuracy</p>
+                             <p className="text-3xl font-bold text-amber-600 mt-2">{metricsData.accuracy}%</p>
+                          </div>
+                       </div>
+                       
+                       <div className="grid md:grid-cols-2 gap-6">
+                         <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
+                           <h3 className="text-lg font-bold text-slate-800">Skill Breakdown</h3>
+                           <div className="h-64 mt-4 w-full">
+                             <ResponsiveContainer width="100%" height="100%">
+                               <BarChart data={Object.entries(metricsData.skillBreakdown || {}).map(([name, stats]: any) => ({ name: name.charAt(0).toUpperCase() + name.slice(1), Accuracy: Math.round((stats.correct/stats.attempted)*100) }))}>
+                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748B', fontSize: 12}} dy={10} />
+                                 <YAxis axisLine={false} tickLine={false} tick={{fill: '#64748B', fontSize: 12}} dx={-10} domain={[0, 100]} />
+                                 <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)' }} cursor={{fill: '#F1F5F9'}} />
+                                 <Bar dataKey="Accuracy" fill="#3B82F6" radius={[4, 4, 0, 0]} maxBarSize={50} />
+                               </BarChart>
+                             </ResponsiveContainer>
+                           </div>
+                         </div>
+                         <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
+                            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                               AI Analyst Suggestions
+                            </h3>
+                            {aiSuggestions ? (
+                              <div className="space-y-4">
+                                 {aiSuggestions.map((s, i) => (
+                                    <div key={i} className="p-4 bg-blue-50 border border-blue-100 rounded-xl">
+                                       <h4 className="font-bold text-blue-900 mb-1">{s.title}</h4>
+                                       <p className="text-sm text-blue-800">{s.description}</p>
+                                    </div>
+                                 ))}
+                              </div>
+                            ) : (
+                              <div className="text-slate-500 text-sm">Consulting AI Analyst...</div>
+                            )}
+                         </div>
+                       </div>
+                       
+                       {/* Curriculum coverage — what a district or funder asks for. */}
+                       <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
+                          <div>
+                            <h3 className="text-lg font-bold text-slate-800">Standards Coverage</h3>
+                            <p className="text-sm text-slate-500">
+                              Alignment of the {bankQuestions.length}-question bank to both anchors Project AIDE
+                              asks for: student-learning standards and the workforce framework.
+                            </p>
+                            <p className="text-xs text-slate-400 mt-1">
+                              Student-standard identifiers follow AIDE's K-12 crosswalk and are representative:
+                              confirm them against the current published standards, and add your state's
+                              CS / digital-literacy standards.
+                            </p>
+                          </div>
+                          {(() => {
+                            const coverage = standardsCoverage(bankQuestions);
+                            const groups = [
+                              { label: "Student · CSTA K-12 CS Standards", rows: coverage.csta },
+                              { label: "Student · ISTE Standards for Students", rows: coverage.iste },
+                              { label: "Student · CYBER.ORG K-12 Cybersecurity", rows: coverage.cyberOrg },
+                              { label: "Workforce · NICE Framework", rows: coverage.nice },
+                              { label: "Workforce · CompTIA Security+ (SY0-701)", rows: coverage.securityPlus },
+                            ];
+                            return (
+                              <div className="grid md:grid-cols-2 gap-6">
+                                {groups.map((g) => (
+                                  <div key={g.label} className="space-y-2">
+                                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                                      {g.label}
+                                    </p>
+                                    {g.rows.length === 0 ? (
+                                      <p className="text-sm text-slate-400">No alignment recorded.</p>
+                                    ) : (
+                                      <ul className="space-y-2">
+                                        {g.rows.map((r) => (
+                                          <li
+                                            key={r.standard}
+                                            className="flex items-center justify-between gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl"
+                                          >
+                                            <span className="text-sm text-slate-700">{r.standard}</span>
+                                            <span className="text-xs font-mono font-bold text-slate-500 whitespace-nowrap">
+                                              {r.questionCount} q
+                                            </span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })()}
+                       </div>
 
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="text-[11px] font-bold uppercase tracking-widest text-slate-400">
-                      Teams
-                    </span>
-                    {[2, 3, 4].map((n) => (
-                      <button
-                        key={n}
-                        onClick={() => setGameShowTeamCount(n)}
-                        className={cn(
-                          "px-4 py-2 rounded-xl text-sm font-bold border transition-all",
-                          gameShowTeamCount === n
-                            ? "bg-amber-400 text-black border-amber-300"
-                            : "bg-white/5 text-slate-300 border-white/10 hover:bg-white/10",
-                        )}
-                      >
-                        {n}
-                      </button>
-                    ))}
-                    <button
-                      onClick={() => createRoom("gameshow")}
-                      disabled={isHosting}
-                      className="ml-auto px-6 py-3 rounded-xl bg-amber-400 text-black font-black hover:bg-amber-300 disabled:opacity-50 transition-colors"
-                    >
-                      {isHosting ? "Starting…" : "Start Game Show"}
-                    </button>
-                  </div>
-                </div>
-              </div>
+                       <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
+                          <div>
+                            <h3 className="text-lg font-bold text-slate-800">Most Missed Questions</h3>
+                            <p className="text-sm text-slate-500">Where the class struggled most — start reteaching here.</p>
+                          </div>
+                          {metricsData.questionStats?.length ? (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="text-left text-[11px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
+                                    <th scope="col" className="py-2 pr-4">Question</th>
+                                    <th scope="col" className="py-2 px-4 whitespace-nowrap">Concept</th>
+                                    <th scope="col" className="py-2 px-4 text-right whitespace-nowrap">Correct</th>
+                                    <th scope="col" className="py-2 pl-4 text-right whitespace-nowrap">Missed</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {metricsData.questionStats.map((q: any) => (
+                                    <tr key={q.id} className="border-b border-slate-100 last:border-0">
+                                      <td className="py-3 pr-4 text-slate-800 max-w-md">{q.question}</td>
+                                      <td className="py-3 px-4 whitespace-nowrap">
+                                        <span className="px-2 py-1 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold">
+                                          {String(q.concept).replace(/_/g, " ")}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4 text-right font-mono text-slate-600 whitespace-nowrap">
+                                        {q.correct}/{q.attempted}
+                                      </td>
+                                      <td className="py-3 pl-4 text-right whitespace-nowrap">
+                                        <span className={cn(
+                                          "font-bold font-mono",
+                                          q.percentMissed >= 50 ? "text-rose-600"
+                                            : q.percentMissed >= 25 ? "text-amber-600"
+                                            : "text-emerald-600",
+                                        )}>
+                                          {q.percentMissed}%
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <p className="text-slate-500 text-sm">No question data yet — results appear once students have answered.</p>
+                          )}
+                       </div>
 
-              {/* Concept Info Footer Grid */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full max-w-4xl px-4 pb-8">
-                {[
-                  {
-                    label: "Confidentiality",
-                    icon: <Lock className="w-5 h-5" />,
-                  },
-                  { label: "Integrity", icon: <Shield className="w-5 h-5" /> },
-                  {
-                    label: "Availability",
-                    icon: <Timer className="w-5 h-5" />,
-                  },
-                  {
-                    label: "Authentication",
-                    icon: <UserPlus className="w-5 h-5" />,
-                  },
-                ].map((concept, i) => (
-                  <motion.div
-                    whileHover={{ scale: 1.02, translateY: -2 }}
-                    whileTap={{ scale: 0.98 }}
-                    key={concept.label}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.4 + i * 0.1 }}
-                    className="p-4 bg-white border border-slate-200 rounded-2xl flex flex-col items-center gap-3 text-center group hover:border-blue-200 hover:shadow-md hover:shadow-blue-900/5 transition-all cursor-pointer"
-                  >
-                    <div className="p-2.5 bg-slate-50 rounded-xl text-slate-400 group-hover:bg-blue-50 group-hover:text-blue-600 transition-colors">
-                      {concept.icon}
+                       <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <h3 className="text-lg font-bold text-slate-800">Student Profiles & Assessment Logs</h3>
+                            <button
+                              onClick={downloadResultsCsv}
+                              disabled={!metricsData.students?.length}
+                              title="Export results as a CSV for your gradebook"
+                              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 font-bold rounded-xl transition-colors text-sm flex items-center gap-2"
+                            >
+                              Download CSV
+                            </button>
+                          </div>
+                          <div className="grid gap-4">
+                            {metricsData.students?.map((s: any) => (
+                              <div key={s.uid} className="p-4 bg-slate-50 rounded-2xl flex flex-col md:flex-row gap-6 border border-slate-200">
+                                 <div className="w-full md:w-1/3 space-y-2">
+                                    <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">{s.name}</p>
+                                    <div className="flex gap-4">
+                                      <div>
+                                        <p className="text-[10px] text-slate-500 uppercase font-bold">Score</p>
+                                        <p className="text-xl font-bold text-blue-600">{s.score}</p>
+                                      </div>
+                                      <div>
+                                        <p className="text-[10px] text-slate-500 uppercase font-bold">Total Time</p>
+                                        <p className="text-xl font-bold text-slate-700">{s.completionTime}s</p>
+                                      </div>
+                                    </div>
+                                 </div>
+                                 <div className="w-full md:w-2/3">
+                                    <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Needs Improvement ({s.wrongQuestions.length})</p>
+                                    {s.wrongQuestions.length > 0 ? (
+                                      <ul className="list-disc list-inside text-sm text-slate-600 space-y-1">
+                                        {s.wrongQuestions.map((wq: string, idx: number) => (
+                                          <li key={idx} className="truncate">{wq}</li>
+                                        ))}
+                                      </ul>
+                                    ) : (
+                                       <p className="text-sm text-emerald-600 font-bold">Perfect accuracy!</p>
+                                    )}
+                                 </div>
+                              </div>
+                            ))}
+                            {(!metricsData.students || metricsData.students.length === 0) && (
+                               <p className="text-slate-500 text-sm">No student data available yet.</p>
+                            )}
+                          </div>
+                       </div>
                     </div>
-                    <span className="text-xs font-semibold text-slate-600 group-hover:text-slate-900 transition-colors">
-                      {concept.label}
-                    </span>
-                  </motion.div>
-                ))}
+                  ) : null}
+                </div>
+                  </div>
+                )}
+
+                {adminTab === "settings" && (
+                  <SettingsPanel
+                    sound={prefs.sound}
+                    onSoundChange={(sound) => updatePrefs({ sound })}
+                    onResetSetup={() => updatePrefs({ ...DEFAULT_PREFS, sound: prefs.sound })}
+                    questions={bankQuestions}
+                    onQuestionsChange={setBankQuestions}
+                  />
+                )}
               </div>
             </motion.div>
           )}
@@ -1884,8 +1872,9 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* Pre-start: session settings */}
-                    {!started && !ended && (
+                    {/* Pre-start: session settings. A game show has no clock, so
+                        the timer settings only apply to a live quiz. */}
+                    {!started && !ended && roomData?.mode !== "gameshow" && (
                       <div className="grid sm:grid-cols-2 gap-4">
                         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 flex flex-col items-center gap-4 shadow-sm">
                           <p className="text-xs font-bold text-slate-700 uppercase tracking-widest shrink-0">
@@ -1959,7 +1948,7 @@ export default function App() {
                         </span>
                       </div>
 
-                      {!started ? (
+                      {!started && !ended ? (
                         <div className="grid sm:grid-cols-2 gap-4 overflow-y-auto pr-2 custom-scrollbar max-h-[40vh]">
                           {players.map((p) => (
                             <motion.div
@@ -2069,13 +2058,13 @@ export default function App() {
                           onClick={leaveHosting}
                           className="w-full py-5 bg-blue-600 text-white font-bold rounded-2xl hover:bg-blue-700 transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 text-lg"
                         >
-                          Back to Lobby <ChevronRight className="w-5 h-5" />
+                          Back to console <ChevronRight className="w-5 h-5" />
                         </motion.button>
                       )}
 
                       {!ended && (
                         <button
-                          onClick={leaveHosting}
+                          onClick={live ? leaveHosting : cancelHosting}
                           className="w-full py-3 text-slate-500 hover:text-slate-800 font-semibold text-sm transition-colors"
                         >
                           {live ? "Leave monitor (session keeps running)" : "Cancel session"}
@@ -2453,7 +2442,7 @@ export default function App() {
                 {showExplanation
                   ? isCorrect
                     ? `Correct. Your score is now ${score}.`
-                    : `Incorrect. The correct answer is: ${currentQuestion.correctAnswer}. Your score is ${score}.`
+                    : `Incorrect. The correct answer is: ${(currentQuestion.correctAnswer ?? "").replace(/[.!?]+$/, "")}. Your score is ${score}.`
                   : ""}
               </div>
 
@@ -2778,493 +2767,6 @@ export default function App() {
             </motion.div>
           )}
 
-          {gameState === "admin_dashboard" && (
-            <motion.div
-              key="admin_dashboard"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="flex-1 flex flex-col w-full py-12 space-y-8 max-w-5xl mx-auto px-4"
-            >
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-4xl font-extrabold tracking-tight text-slate-900">ADMIN DASHBOARD</h2>
-                  <p className="text-slate-500 uppercase text-xs font-semibold tracking-widest mt-2">Manage Sessions and Question Bank</p>
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="flex bg-slate-100 p-1 rounded-xl">
-                     <button 
-                        onClick={() => setAdminTab("sessions")}
-                        className={cn("px-4 py-2 text-sm font-bold rounded-lg transition-all", adminTab === "sessions" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700")}
-                     >
-                       Sessions
-                     </button>
-                     <button 
-                        onClick={() => setAdminTab("questions")}
-                        className={cn("px-4 py-2 text-sm font-bold rounded-lg transition-all", adminTab === "questions" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700")}
-                     >
-                       Question Bank
-                     </button>
-                     <button 
-                        onClick={() => setAdminTab("metrics")}
-                        className={cn("px-4 py-2 text-sm font-bold rounded-lg transition-all", adminTab === "metrics" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700")}
-                     >
-                       Metrics
-                     </button>
-                  </div>
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => setGameState("lobby")}
-                    className="px-6 py-3 bg-white text-slate-700 border border-slate-200 rounded-xl font-bold transition-all shadow-sm hover:bg-slate-50 flex items-center gap-2"
-                  >
-                    <ChevronRight className="w-5 h-5 rotate-180" /> Back to Lobby
-                  </motion.button>
-                </div>
-              </div>
-
-              {adminTab === "sessions" ? (
-              <div className="flex flex-col gap-4">
-                {allRooms.map(room => (
-                  <div key={room.id} className="bg-white border border-slate-200 rounded-3xl p-6 flex flex-col md:flex-row gap-4 md:gap-0 items-start md:items-center justify-between shadow-sm hover:shadow-md transition-shadow">
-                    <div className="flex flex-wrap md:flex-nowrap items-center gap-4 md:gap-6 w-full md:w-auto">
-                      <div className="space-y-1 w-1/2 md:w-auto">
-                        <p className="text-[10px] uppercase font-semibold text-slate-500 tracking-widest">Session ID</p>
-                        <p className="text-2xl font-bold font-mono text-blue-600">{room.id}</p>
-                      </div>
-                      <div className="hidden md:block w-px h-10 bg-slate-200" />
-                      <div className="space-y-1 w-1/2 md:w-auto">
-                        <p className="text-[10px] uppercase font-semibold text-slate-500 tracking-widest">Host</p>
-                        <p className="text-lg font-semibold text-slate-800 truncate max-w-[150px] md:max-w-none">{room.hostName || room.hostId}</p>
-                      </div>
-                      <div className="hidden md:block w-px h-10 bg-slate-200" />
-                      <div className="space-y-1 w-1/2 md:w-auto">
-                        <p className="text-[10px] uppercase font-semibold text-slate-500 tracking-widest">Difficulty</p>
-                        <p className="text-base font-bold uppercase text-slate-700">{room.difficulty === 'all' ? 'Mixed' : room.difficulty}</p>
-                      </div>
-                      <div className="hidden md:block w-px h-10 bg-slate-200" />
-                      <div className="space-y-1 w-1/2 md:w-auto">
-                        <p className="text-[10px] uppercase font-semibold text-slate-500 tracking-widest">Created At</p>
-                        <p className="text-sm text-slate-500 font-medium">
-                          {room.createdAt?.toDate ? room.createdAt.toDate().toLocaleString() : 'N/A'}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-end w-full md:w-auto gap-4 mt-4 md:mt-0">
-                      <div className={cn(
-                        "px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest border",
-                        room.status === 'started' ? "bg-amber-100 text-amber-700 border-amber-200" : 
-                        room.status === 'finished' ? "bg-slate-100 text-slate-600 border-slate-200" :
-                        "bg-emerald-100 text-emerald-700 border-emerald-200"
-                      )}>
-                        {room.status}
-                      </div>
-                      <motion.button
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        onClick={() => handleDeleteRoom(room.id)}
-                        className="p-2.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-100 rounded-xl transition-all"
-                        title="Delete Session"
-                        aria-label={`Delete session ${room.id}`}
-                      >
-                        <Trash2 className="w-5 h-5" />
-                      </motion.button>
-                    </div>
-                  </div>
-                ))}
-
-                {allRooms.length === 0 && (
-                  <div className="p-12 text-center text-slate-500 border border-dashed border-slate-300 bg-slate-50/50 rounded-3xl mt-8">
-                    <p className="text-lg font-medium">No sessions found in the database.</p>
-                  </div>
-                )}
-              </div>
-              ) : adminTab === "questions" ? (
-                <div className="flex flex-col gap-6">
-                  <div className="flex items-center justify-between">
-                     <p className="text-slate-600 font-medium">Total Questions: {bankQuestions.length}</p>
-                     <div className="flex gap-2">
-                       <button onClick={() => setEditingQuestion({ id: '', concept: 'art_of_defending', type: 'mcq', question: '', options: ['', '', '', ''], correctAnswer: '', explanation: '', difficulty: 'medium' })} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors text-sm">
-                          New Question
-                       </button>
-                       <button onClick={handleSeedQuestions} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition-colors text-sm">
-                          Seed Defaults
-                       </button>
-                     </div>
-                  </div>
-
-                  {editingQuestion && (
-                    <div className="p-6 bg-slate-50 border border-blue-200 rounded-3xl shadow-sm space-y-4 mb-4">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-xl font-bold text-slate-800">{editingQuestion.id ? 'Edit Question' : 'Create Question'}</h3>
-                        <div className="flex bg-slate-200 p-1 rounded-xl">
-                           <button 
-                              onClick={() => setPreviewQuestion(false)}
-                              className={cn("px-4 py-1 flex items-center gap-2 text-sm font-bold rounded-lg transition-all", !previewQuestion ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700")}
-                           >
-                              Edit
-                           </button>
-                           <button 
-                              onClick={() => setPreviewQuestion(true)}
-                              className={cn("px-4 py-1 flex items-center gap-2 text-sm font-bold rounded-lg transition-all", previewQuestion ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700")}
-                           >
-                              Preview
-                           </button>
-                        </div>
-                      </div>
-                      
-                      {!previewQuestion ? (
-                        <div className="space-y-4">
-                          <div>
-                            <label className="text-xs font-bold text-slate-500 uppercase">Question Text</label>
-                            <textarea value={editingQuestion.question} onChange={e => setEditingQuestion({...editingQuestion, question: e.target.value})} className="w-full mt-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 min-h-[80px]"></textarea>
-                          </div>
-                          <div>
-                            <label className="text-xs font-bold text-slate-500 uppercase">Image URL (Optional)</label>
-                            <input type="url" value={editingQuestion.imageUrl || ''} onChange={e => setEditingQuestion({...editingQuestion, imageUrl: e.target.value})} placeholder="https://example.com/image.png" className="w-full mt-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500" />
-                          </div>
-                          <div>
-                             <label className="text-xs font-bold text-slate-500 uppercase">Concept</label>
-                             <select value={editingQuestion.concept} onChange={e => setEditingQuestion({...editingQuestion, concept: e.target.value as ConceptId})} className="w-full mt-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500">
-                               {CONCEPTS.map(c => (
-                                 <option key={c.id} value={c.id}>{c.name}</option>
-                               ))}
-                             </select>
-                             <p className="text-[11px] text-slate-400 mt-1">Determines which solo-campaign track this question appears in.</p>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-4">
-                            <div>
-                               <label className="text-xs font-bold text-slate-500 uppercase">Difficulty</label>
-                               <select value={editingQuestion.difficulty} onChange={e => setEditingQuestion({...editingQuestion, difficulty: e.target.value as any})} className="w-full mt-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500">
-                                 <option value="easy">Easy</option>
-                                 <option value="medium">Medium</option>
-                                 <option value="hard">Hard</option>
-                               </select>
-                            </div>
-                            <div>
-                               <label className="text-xs font-bold text-slate-500 uppercase">Correct Answer (Must match an option exactly)</label>
-                               <input type="text" value={editingQuestion.correctAnswer} onChange={e => setEditingQuestion({...editingQuestion, correctAnswer: e.target.value})} className="w-full mt-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500" />
-                            </div>
-                          </div>
-                          <div>
-                            <label className="text-xs font-bold text-slate-500 uppercase">Options (MCQ)</label>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-1">
-                              {editingQuestion.options?.map((opt, i) => (
-                                <input key={i} type="text" placeholder={`Option ${i+1}`} value={opt} onChange={e => {
-                                  const newOpts = [...(editingQuestion.options || [])];
-                                  newOpts[i] = e.target.value;
-                                  setEditingQuestion({...editingQuestion, options: newOpts});
-                                }} className="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500" />
-                              ))}
-                            </div>
-                          </div>
-                          <div>
-                            <label className="text-xs font-bold text-slate-500 uppercase">Explanation</label>
-                            <textarea value={editingQuestion.explanation} onChange={e => setEditingQuestion({...editingQuestion, explanation: e.target.value})} className="w-full mt-1 p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 min-h-[80px]"></textarea>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="bg-[#050505] text-slate-100 p-8 rounded-2xl relative overflow-hidden font-sans">
-                           <div className="absolute inset-0 z-0 pointer-events-none opacity-20 [mask-image:linear-gradient(to_bottom,white,transparent)]">
-                             <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:40px_40px]"></div>
-                           </div>
-                           <div className="relative z-10 space-y-8">
-                             <div className="space-y-4 text-center max-w-2xl mx-auto">
-                                <span className="px-3 py-1 bg-white/5 rounded-full border border-white/10 text-[10px] font-mono uppercase text-emerald-500">
-                                   SEC-LEVEL: {editingQuestion.difficulty}
-                                </span>
-                                
-                                {editingQuestion.imageUrl && (
-                                  <div className="relative w-full aspect-video rounded-2xl overflow-hidden border border-white/10 shadow-xl mx-auto mt-6 mb-4 bg-black/40">
-                                    <img
-                                      src={editingQuestion.imageUrl}
-                                      alt="Mission intel visual"
-                                      className="w-full h-full object-contain"
-                                      referrerPolicy="no-referrer"
-                                    />
-                                  </div>
-                                )}
-
-                                <h2 className="text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white mt-4">
-                                   {editingQuestion.question || "No question text provided..."}
-                                </h2>
-                             </div>
-                             
-                             <div className="grid gap-4 max-w-xl mx-auto w-full">
-                                {editingQuestion.type === "mcq" && editingQuestion.options?.map((option, idx) => (
-                                   <div
-                                      key={idx}
-                                      className={cn(
-                                         "p-5 bg-white/5 border text-left rounded-2xl transition-colors",
-                                         option === editingQuestion.correctAnswer
-                                           ? "border-emerald-500 bg-emerald-500/10 text-emerald-400"
-                                           : "border-white/10 text-white"
-                                      )}
-                                   >
-                                      <span className="font-medium">{option || `Option ${idx + 1}`}</span>
-                                   </div>
-                                ))}
-                             </div>
-                           </div>
-                        </div>
-                      )}
-                      
-                      <div className="flex items-center gap-3 pt-2">
-                        <button onClick={() => handleSaveQuestion(editingQuestion)} className="px-6 py-2 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700">Save</button>
-                        <button onClick={() => { setEditingQuestion(null); setPreviewQuestion(false); }} className="px-4 py-2 bg-white text-slate-600 font-bold border border-slate-200 rounded-xl hover:bg-slate-50">Cancel</button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 gap-4">
-                     {bankQuestions.map((q, idx) => (
-                        <div key={q.id} className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
-                           <div className="flex items-start justify-between">
-                             <div className="space-y-1">
-                                <span className="px-3 py-1 bg-blue-100 text-blue-700 font-bold text-[10px] uppercase rounded-full tracking-widest">{q.difficulty}</span>
-                                <h4 className="text-xl font-bold text-slate-900 mt-2">{q.question}</h4>
-                             </div>
-                             <div className="flex gap-2">
-                               <button onClick={() => setEditingQuestion(q)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors">
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                               </button>
-                               <button onClick={() => handleDeleteQuestion(q.id)} className="p-2 text-slate-400 hover:text-rose-500 transition-colors">
-                                  <Trash2 className="w-5 h-5" />
-                               </button>
-                             </div>
-                           </div>
-                           <div className="grid grid-cols-2 gap-2 mt-4">
-                              {q.options?.map((opt, i) => (
-                                <div key={i} className={cn("px-4 py-2 text-sm rounded-lg border", opt === q.correctAnswer ? "bg-green-50 border-green-200 text-green-700 font-bold" : "bg-slate-50 border-slate-200 text-slate-600")}>
-                                   {opt}
-                                </div>
-                              ))}
-                           </div>
-                           <p className="text-sm text-slate-500"><span className="font-bold text-slate-700">Explanation:</span> {q.explanation}</p>
-                        </div>
-                     ))}
-                     {bankQuestions.length === 0 && (
-                       <div className="p-12 text-center text-slate-500 border border-dashed border-slate-300 bg-slate-50/50 rounded-3xl mt-8">
-                         <p className="text-lg font-medium">No questions found in the database. Click "Seed Questions" to load defaults.</p>
-                       </div>
-                     )}
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-6">
-                  {metricsLoading ? (
-                    <div className="p-12 text-center text-slate-500">Loading metrics...</div>
-                  ) : metricsData ? (
-                    <div className="space-y-8">
-                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                          <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm">
-                             <p className="text-xs font-bold text-slate-500 uppercase">Total Students</p>
-                             <p className="text-3xl font-bold text-blue-600 mt-2">{metricsData.totalStudents}</p>
-                          </div>
-                          <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm">
-                             <p className="text-xs font-bold text-slate-500 uppercase">Avg Score</p>
-                             <p className="text-3xl font-bold text-emerald-600 mt-2">{metricsData.averageScore}</p>
-                          </div>
-                          <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm">
-                             <p className="text-xs font-bold text-slate-500 uppercase">Total Attempts</p>
-                             <p className="text-3xl font-bold text-indigo-600 mt-2">{metricsData.totalQuestionsAttempted}</p>
-                          </div>
-                          <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm">
-                             <p className="text-xs font-bold text-slate-500 uppercase">Global Accuracy</p>
-                             <p className="text-3xl font-bold text-amber-600 mt-2">{metricsData.accuracy}%</p>
-                          </div>
-                       </div>
-                       
-                       <div className="grid md:grid-cols-2 gap-6">
-                         <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
-                           <h3 className="text-lg font-bold text-slate-800">Skill Breakdown</h3>
-                           <div className="h-64 mt-4 w-full">
-                             <ResponsiveContainer width="100%" height="100%">
-                               <BarChart data={Object.entries(metricsData.skillBreakdown || {}).map(([name, stats]: any) => ({ name: name.charAt(0).toUpperCase() + name.slice(1), Accuracy: Math.round((stats.correct/stats.attempted)*100) }))}>
-                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748B', fontSize: 12}} dy={10} />
-                                 <YAxis axisLine={false} tickLine={false} tick={{fill: '#64748B', fontSize: 12}} dx={-10} domain={[0, 100]} />
-                                 <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)' }} cursor={{fill: '#F1F5F9'}} />
-                                 <Bar dataKey="Accuracy" fill="#3B82F6" radius={[4, 4, 0, 0]} maxBarSize={50} />
-                               </BarChart>
-                             </ResponsiveContainer>
-                           </div>
-                         </div>
-                         <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
-                            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                               AI Analyst Suggestions
-                            </h3>
-                            {aiSuggestions ? (
-                              <div className="space-y-4">
-                                 {aiSuggestions.map((s, i) => (
-                                    <div key={i} className="p-4 bg-blue-50 border border-blue-100 rounded-xl">
-                                       <h4 className="font-bold text-blue-900 mb-1">{s.title}</h4>
-                                       <p className="text-sm text-blue-800">{s.description}</p>
-                                    </div>
-                                 ))}
-                              </div>
-                            ) : (
-                              <div className="text-slate-500 text-sm">Consulting AI Analyst...</div>
-                            )}
-                         </div>
-                       </div>
-                       
-                       {/* Curriculum coverage — what a district or funder asks for. */}
-                       <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
-                          <div>
-                            <h3 className="text-lg font-bold text-slate-800">Standards Coverage</h3>
-                            <p className="text-sm text-slate-500">
-                              Alignment of the {bankQuestions.length}-question bank to both anchors Project AIDE
-                              asks for: student-learning standards and the workforce framework.
-                            </p>
-                            <p className="text-xs text-slate-400 mt-1">
-                              Student-standard identifiers follow AIDE's K-12 crosswalk and are representative:
-                              confirm them against the current published standards, and add your state's
-                              CS / digital-literacy standards.
-                            </p>
-                          </div>
-                          {(() => {
-                            const coverage = standardsCoverage(bankQuestions);
-                            const groups = [
-                              { label: "Student · CSTA K-12 CS Standards", rows: coverage.csta },
-                              { label: "Student · ISTE Standards for Students", rows: coverage.iste },
-                              { label: "Student · CYBER.ORG K-12 Cybersecurity", rows: coverage.cyberOrg },
-                              { label: "Workforce · NICE Framework", rows: coverage.nice },
-                              { label: "Workforce · CompTIA Security+ (SY0-701)", rows: coverage.securityPlus },
-                            ];
-                            return (
-                              <div className="grid md:grid-cols-2 gap-6">
-                                {groups.map((g) => (
-                                  <div key={g.label} className="space-y-2">
-                                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                                      {g.label}
-                                    </p>
-                                    {g.rows.length === 0 ? (
-                                      <p className="text-sm text-slate-400">No alignment recorded.</p>
-                                    ) : (
-                                      <ul className="space-y-2">
-                                        {g.rows.map((r) => (
-                                          <li
-                                            key={r.standard}
-                                            className="flex items-center justify-between gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl"
-                                          >
-                                            <span className="text-sm text-slate-700">{r.standard}</span>
-                                            <span className="text-xs font-mono font-bold text-slate-500 whitespace-nowrap">
-                                              {r.questionCount} q
-                                            </span>
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            );
-                          })()}
-                       </div>
-
-                       <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
-                          <div>
-                            <h3 className="text-lg font-bold text-slate-800">Most Missed Questions</h3>
-                            <p className="text-sm text-slate-500">Where the class struggled most — start reteaching here.</p>
-                          </div>
-                          {metricsData.questionStats?.length ? (
-                            <div className="overflow-x-auto">
-                              <table className="w-full text-sm">
-                                <thead>
-                                  <tr className="text-left text-[11px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
-                                    <th scope="col" className="py-2 pr-4">Question</th>
-                                    <th scope="col" className="py-2 px-4 whitespace-nowrap">Concept</th>
-                                    <th scope="col" className="py-2 px-4 text-right whitespace-nowrap">Correct</th>
-                                    <th scope="col" className="py-2 pl-4 text-right whitespace-nowrap">Missed</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {metricsData.questionStats.map((q: any) => (
-                                    <tr key={q.id} className="border-b border-slate-100 last:border-0">
-                                      <td className="py-3 pr-4 text-slate-800 max-w-md">{q.question}</td>
-                                      <td className="py-3 px-4 whitespace-nowrap">
-                                        <span className="px-2 py-1 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold">
-                                          {String(q.concept).replace(/_/g, " ")}
-                                        </span>
-                                      </td>
-                                      <td className="py-3 px-4 text-right font-mono text-slate-600 whitespace-nowrap">
-                                        {q.correct}/{q.attempted}
-                                      </td>
-                                      <td className="py-3 pl-4 text-right whitespace-nowrap">
-                                        <span className={cn(
-                                          "font-bold font-mono",
-                                          q.percentMissed >= 50 ? "text-rose-600"
-                                            : q.percentMissed >= 25 ? "text-amber-600"
-                                            : "text-emerald-600",
-                                        )}>
-                                          {q.percentMissed}%
-                                        </span>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : (
-                            <p className="text-slate-500 text-sm">No question data yet — results appear once students have answered.</p>
-                          )}
-                       </div>
-
-                       <div className="p-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-4">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <h3 className="text-lg font-bold text-slate-800">Student Profiles & Assessment Logs</h3>
-                            <button
-                              onClick={downloadResultsCsv}
-                              disabled={!metricsData.students?.length}
-                              title="Export results as a CSV for your gradebook"
-                              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 font-bold rounded-xl transition-colors text-sm flex items-center gap-2"
-                            >
-                              Download CSV
-                            </button>
-                          </div>
-                          <div className="grid gap-4">
-                            {metricsData.students?.map((s: any) => (
-                              <div key={s.uid} className="p-4 bg-slate-50 rounded-2xl flex flex-col md:flex-row gap-6 border border-slate-200">
-                                 <div className="w-full md:w-1/3 space-y-2">
-                                    <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">{s.name}</p>
-                                    <div className="flex gap-4">
-                                      <div>
-                                        <p className="text-[10px] text-slate-500 uppercase font-bold">Score</p>
-                                        <p className="text-xl font-bold text-blue-600">{s.score}</p>
-                                      </div>
-                                      <div>
-                                        <p className="text-[10px] text-slate-500 uppercase font-bold">Total Time</p>
-                                        <p className="text-xl font-bold text-slate-700">{s.completionTime}s</p>
-                                      </div>
-                                    </div>
-                                 </div>
-                                 <div className="w-full md:w-2/3">
-                                    <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Needs Improvement ({s.wrongQuestions.length})</p>
-                                    {s.wrongQuestions.length > 0 ? (
-                                      <ul className="list-disc list-inside text-sm text-slate-600 space-y-1">
-                                        {s.wrongQuestions.map((wq: string, idx: number) => (
-                                          <li key={idx} className="truncate">{wq}</li>
-                                        ))}
-                                      </ul>
-                                    ) : (
-                                       <p className="text-sm text-emerald-600 font-bold">Perfect accuracy!</p>
-                                    )}
-                                 </div>
-                              </div>
-                            ))}
-                            {(!metricsData.students || metricsData.students.length === 0) && (
-                               <p className="text-slate-500 text-sm">No student data available yet.</p>
-                            )}
-                          </div>
-                       </div>
-                    </div>
-                  ) : null}
-                </div>
-              )}
-            </motion.div>
-          )}
         </AnimatePresence>
       </main>
 
