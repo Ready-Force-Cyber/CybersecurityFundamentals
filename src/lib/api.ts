@@ -1,3 +1,5 @@
+import type { CloseCallView } from "./closecall";
+
 // Client for the app server's session API. Replaces direct Firestore access,
 // so the host/join/play loop runs without any Firebase security rules.
 
@@ -59,7 +61,7 @@ export interface GameShowView {
 export interface RoomState {
   code: string;
   status: "waiting" | "started" | "finished";
-  mode?: "quiz" | "gameshow";
+  mode?: "quiz" | "gameshow" | "closecall";
   difficulty: string;
   questionCount: number;
   timePerQuestion: number;
@@ -67,6 +69,8 @@ export interface RoomState {
   hostName: string;
   players: RoomPlayer[];
   gameshow?: GameShowView;
+  /** Close Call: the round in play, without its answer until revealed. */
+  closecall?: CloseCallView;
 }
 
 async function req(path: string, options: RequestInit = {}, auth = false) {
@@ -132,7 +136,7 @@ export const api = {
     questionCount: number;
     timePerQuestion: number;
     hostName?: string;
-    mode?: "quiz" | "gameshow";
+    mode?: "quiz" | "gameshow" | "closecall";
     teamCount?: number;
     rounds?: number;
   }): Promise<{ code: string }> =>
@@ -158,6 +162,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ playerId, playerToken, answer }),
     }),
+
+  // ---- Close Call -------------------------------------------------------
+  /** A player locks in (or changes) their guess for the round in play. */
+  closeCallGuess: (
+    code: string,
+    playerId: string,
+    playerToken: string,
+    guess: number,
+  ): Promise<{ guess: number; room: RoomState }> =>
+    req(`/api/session/${code}/closecall/guess`, {
+      method: "POST",
+      body: JSON.stringify({ playerId, playerToken, guess }),
+    }),
+
+  /** Host closes guessing and reveals the answer. */
+  closeCallReveal: (code: string): Promise<RoomState> =>
+    req(`/api/session/${code}/closecall/reveal`, { method: "POST", body: "{}" }, true),
+
+  /** Host moves to the next item (or ends the game after the last). */
+  closeCallNext: (code: string): Promise<RoomState> =>
+    req(`/api/session/${code}/closecall/next`, { method: "POST", body: "{}" }, true),
 
   listSessions: (): Promise<{ sessions: any[] }> => req("/api/sessions", {}, true),
 

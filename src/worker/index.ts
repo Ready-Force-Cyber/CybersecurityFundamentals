@@ -225,6 +225,28 @@ api.post("/session/:code/next-turn", async (c) => {
   return proxy(await callDO(roomStub(c.env, c.req.param("code").toUpperCase()), "next-turn", {}));
 });
 
+// ---- Close Call ----------------------------------------------------------
+// Players guess directly (the Durable Object checks their token); only the
+// host can reveal a round or move on.
+api.post("/session/:code/closecall/guess", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as any);
+  return proxy(await callDO(roomStub(c.env, c.req.param("code").toUpperCase()), "closecall-guess", body));
+});
+
+api.post("/session/:code/closecall/reveal", async (c) => {
+  if (!(await isInstructor(c.env, c.req.header("Authorization")))) {
+    return c.json({ error: "Instructor sign-in required." }, 401);
+  }
+  return proxy(await callDO(roomStub(c.env, c.req.param("code").toUpperCase()), "closecall-reveal", {}));
+});
+
+api.post("/session/:code/closecall/next", async (c) => {
+  if (!(await isInstructor(c.env, c.req.header("Authorization")))) {
+    return c.json({ error: "Instructor sign-in required." }, 401);
+  }
+  return proxy(await callDO(roomStub(c.env, c.req.param("code").toUpperCase()), "closecall-next", {}));
+});
+
 // Players answer directly — the Durable Object checks the player token and
 // that it is actually their team's turn.
 api.post("/session/:code/answer", async (c) => {

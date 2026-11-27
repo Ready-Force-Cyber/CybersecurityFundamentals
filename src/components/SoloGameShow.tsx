@@ -46,9 +46,6 @@ export interface SoloGameShowProps {
 
 type Stage = "idle" | "spinning" | "hazard" | "question" | "checking" | "feedback";
 
-/** Fewest milliseconds between tick sounds, so a fast spin clicks, not buzzes. */
-const MIN_TICK_GAP_MS = 45;
-
 /**
  * Ref callback that focuses an element when it mounts, without scrolling.
  * (The `autoFocus` attribute scrolls the page to the element, which pushed
@@ -88,7 +85,6 @@ export function SoloGameShow({
   const history = useRef<SoloHistoryEntry[]>([]);
   const shownAt = useRef(0);
   const landTimer = useRef<number | null>(null);
-  const lastTick = useRef(0);
 
   const stopTimers = () => {
     if (landTimer.current !== null) window.clearTimeout(landTimer.current);
@@ -316,12 +312,9 @@ export function SoloGameShow({
             rotation={rotation}
             duration={reducedMotion ? 0 : SPIN_SECONDS}
             reducedMotion={reducedMotion}
-            onTick={() => {
-              const now = performance.now();
-              if (now - lastTick.current < MIN_TICK_GAP_MS) return;
-              lastTick.current = now;
-              audio.playTick();
-            }}
+            onTick={() => audio.playWheelClick()}
+            onSpinStart={() => audio.playWheelWhoosh()}
+            onLand={() => audio.playWheelLand()}
             className={cn(
               "transition-[width] duration-300 lg:w-[300px]",
               showingQuestion ? "w-28" : "w-64 sm:w-72",

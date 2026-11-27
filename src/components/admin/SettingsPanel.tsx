@@ -141,12 +141,22 @@ function Card({ title, icon, children }: { title: string; icon: ReactNode; child
 interface SettingsPanelProps {
   sound: boolean;
   onSoundChange: (on: boolean) => void;
+  lobbyMusic: boolean;
+  onLobbyMusicChange: (on: boolean) => void;
   onResetSetup: () => void;
   questions: Question[];
   onQuestionsChange: (questions: Question[]) => void;
 }
 
-export function SettingsPanel({ sound, onSoundChange, onResetSetup, questions, onQuestionsChange }: SettingsPanelProps) {
+export function SettingsPanel({
+  sound,
+  onSoundChange,
+  lobbyMusic,
+  onLobbyMusicChange,
+  onResetSetup,
+  questions,
+  onQuestionsChange,
+}: SettingsPanelProps) {
   const [setupReset, setSetupReset] = useState(false);
 
   // Backup and import
@@ -289,6 +299,30 @@ export function SettingsPanel({ sound, onSoundChange, onResetSetup, questions, o
                 className={cn(
                   "absolute top-1 left-1 w-5 h-5 rounded-full bg-white shadow transition-transform",
                   sound && "translate-x-5",
+                )}
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+          <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-100">
+            <div>
+              <p id="lobby-music-label" className="font-semibold text-slate-900">Waiting-room music</p>
+              <p className="text-sm text-slate-500">A calm loop on your screen while students join. Stops when you begin.</p>
+            </div>
+            <button
+              role="switch"
+              aria-checked={lobbyMusic}
+              aria-labelledby="lobby-music-label"
+              onClick={() => onLobbyMusicChange(!lobbyMusic)}
+              className={cn(
+                "relative w-12 h-7 rounded-full transition-colors shrink-0 focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-400/40",
+                lobbyMusic ? "bg-blue-600" : "bg-slate-300",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-1 left-1 w-5 h-5 rounded-full bg-white shadow transition-transform",
+                  lobbyMusic && "translate-x-5",
                 )}
                 aria-hidden="true"
               />

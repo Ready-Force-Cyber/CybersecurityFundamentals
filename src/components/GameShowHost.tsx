@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { cn } from "../lib/utils";
+import { audio } from "../lib/audio";
 import { WHEEL, roundInfo, winningTeams } from "../lib/gameshow";
 import { GameWheel, SEGMENT_ANGLE, SPIN_SECONDS } from "./Wheel";
 import type { GameShowView } from "../lib/api";
@@ -38,6 +39,9 @@ function Wheel({ landedIndex, spinning, reducedMotion }: WheelProps) {
       rotation={rotation}
       duration={reducedMotion || !spinning ? 0 : SPIN_SECONDS}
       reducedMotion={reducedMotion}
+      onTick={() => audio.playWheelClick()}
+      onSpinStart={() => audio.playWheelWhoosh()}
+      onLand={() => audio.playWheelLand()}
     />
   );
 }

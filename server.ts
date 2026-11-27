@@ -30,6 +30,15 @@ import {
   nextTurn,
   activeTeam,
 } from "./src/lib/gameshow";
+import {
+  type CloseCallState,
+  createCloseCallState,
+  submitGuess,
+  revealRound,
+  nextRound,
+  closeCallView,
+} from "./src/lib/closecall";
+import { CLOSE_CALL_ITEMS } from "./src/server-data/closecall-items";
 
 // Local development reads settings (APP_PASSWORD, GEMINI_API_KEY) from .env.
 // Variables already set in the environment win, so hosting is unaffected.
@@ -130,8 +139,11 @@ interface Player {
 interface Room {
   code: string;
   status: "waiting" | "started" | "finished";
-  /** "quiz" is the original everyone-answers mode; "gameshow" is team play. */
-  mode: "quiz" | "gameshow";
+  /**
+   * "quiz" is the original everyone-answers mode; "gameshow" is team play on
+   * the wheel; "closecall" is closest-guess-without-going-over.
+   */
+  mode: "quiz" | "gameshow" | "closecall";
   difficulty: string;
   questionCount: number;
   timePerQuestion: number;
@@ -141,6 +153,8 @@ interface Room {
   players: Map<string, Player>;
   /** Present only in game-show mode. */
   gameshow?: GameShowState;
+  /** Present only in Close Call mode. */
+  closecall?: CloseCallState;
   /** Question ids already used this game, so spins don't repeat them. */
   usedQuestionIds?: string[];
   /**
@@ -192,6 +206,8 @@ function publicRoom(room: Room) {
     gameshow: room.gameshow
       ? { ...room.gameshow, question: publicQuestion(room.code, room.gameshow.questionId) }
       : undefined,
+    // Close Call: no answer and no guess values until the host reveals.
+    closecall: room.closecall ? closeCallView(room.closecall, CLOSE_CALL_ITEMS) : undefined,
   };
 }
 
@@ -324,10 +340,11 @@ async function startServer() {
     const { difficulty, questionCount, timePerQuestion, hostName, mode, teamCount, rounds } = req.body ?? {};
     const code = newCode();
     const gameshowMode = mode === "gameshow";
+    const closeCallMode = mode === "closecall";
     rooms.set(code, {
       code,
       status: "waiting",
-      mode: gameshowMode ? "gameshow" : "quiz",
+      mode: gameshowMode ? "gameshow" : closeCallMode ? "closecall" : "quiz",
       difficulty: ["all", "easy", "medium", "hard"].includes(difficulty) ? difficulty : "all",
       questionCount: Number(questionCount) || 10,
       timePerQuestion: normalizeTimePerQuestion(timePerQuestion),
@@ -336,6 +353,7 @@ async function startServer() {
       createdAt: Date.now(),
       players: new Map(),
       gameshow: gameshowMode ? createGameShowState(Number(teamCount) || 2, Number(rounds) || undefined) : undefined,
+      closecall: closeCallMode ? createCloseCallState(CLOSE_CALL_ITEMS, Number(questionCount)) : undefined,
       usedQuestionIds: [],
     });
     res.json({ code });
@@ -444,6 +462,72 @@ async function startServer() {
     player.history.push({ question: { id: question.id, question: question.question, concept: question.concept, difficulty: question.difficulty }, correct, timeTaken: 0 });
     room.gameshow = applyAnswer(room.gameshow, correct);
     res.json({ correct, correctAnswer: question.correctAnswer, room: publicRoom(room) });
+  });
+
+  // ---- Close Call -------------------------------------------------------
+  /** A player locks in (or changes) their guess for the current round. */
+  app.post("/api/session/:code/closecall/guess", (req, res) => {
+    const room = rooms.get(req.params.code.toUpperCase());
+    if (!room) return res.status(404).json({ error: "Session not found." });
+    if (room.mode !== "closecall" || !room.closecall) {
+      return res.status(409).json({ error: "This session is not a Close Call game." });
+    }
+    if (room.status !== "started") {
+      return res.status(409).json({ error: "The game isn't running right now." });
+    }
+    const { playerId, playerToken, guess } = req.body ?? {};
+    const player = room.players.get(playerId);
+    if (!player || player.token !== playerToken) {
+      return res.status(403).json({ error: "Invalid player." });
+    }
+    const result = submitGuess(room.closecall, player.id, guess);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    room.closecall = result.state;
+    res.json({ guess: result.guess, room: publicRoom(room) });
+  });
+
+  /** Host closes guessing and reveals the answer; points go to the players. */
+  app.post("/api/session/:code/closecall/reveal", (req, res) => {
+    if (!requireInstructor(req, res)) return;
+    const room = rooms.get(req.params.code.toUpperCase());
+    if (!room) return res.status(404).json({ error: "Session not found." });
+    if (room.mode !== "closecall" || !room.closecall) {
+      return res.status(409).json({ error: "This session is not a Close Call game." });
+    }
+    const item = CLOSE_CALL_ITEMS.find((i) => i.id === room.closecall!.itemIds[room.closecall!.index]);
+    if (!item) return res.status(409).json({ error: "This round's item is no longer available." });
+    const result = revealRound(room.closecall, item);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    room.closecall = result.state;
+    for (const entry of result.result.entries) {
+      const player = room.players.get(entry.playerId);
+      if (!player) continue;
+      player.score += entry.points;
+      player.history.push({
+        question: { id: item.id, question: item.prompt, concept: item.concept, difficulty: "medium" },
+        correct: entry.points > 0,
+        timeTaken: 0,
+      });
+    }
+    res.json(publicRoom(room));
+  });
+
+  /** Host moves to the next item; after the last one the game ends. */
+  app.post("/api/session/:code/closecall/next", (req, res) => {
+    if (!requireInstructor(req, res)) return;
+    const room = rooms.get(req.params.code.toUpperCase());
+    if (!room) return res.status(404).json({ error: "Session not found." });
+    if (room.mode !== "closecall" || !room.closecall) {
+      return res.status(409).json({ error: "This session is not a Close Call game." });
+    }
+    const result = nextRound(room.closecall);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    room.closecall = result.state;
+    if (result.finished) {
+      room.status = "finished";
+      room.endTime = Date.now();
+    }
+    res.json(publicRoom(room));
   });
 
   /** Host hands play to the next team. */

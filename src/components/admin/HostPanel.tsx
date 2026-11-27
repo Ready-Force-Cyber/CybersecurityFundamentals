@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import { motion } from "motion/react";
-import { AlertTriangle, Play, ShieldCheck, Trophy } from "lucide-react";
+import { AlertTriangle, Gauge, Play, ShieldCheck, Trophy } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { SoloDifficulty } from "../../lib/questions";
 import { MAX_TEAMS, MIN_TEAMS } from "../../lib/gameshow";
+import { CLOSE_CALL_ROUND_CHOICES } from "../../lib/closecall";
 import {
   QUESTION_COUNTS,
   ROUND_CHOICES,
@@ -31,6 +32,8 @@ interface HostPanelProps {
   onTeamCountChange: (n: number) => void;
   rounds: number;
   onRoundsChange: (n: number) => void;
+  closeCallRounds: number;
+  onCloseCallRoundsChange: (n: number) => void;
   /** Questions in the bank at each level. */
   availability: Record<SoloDifficulty, number>;
   isHosting: boolean;
@@ -107,6 +110,8 @@ export function HostPanel(props: HostPanelProps) {
     onTeamCountChange,
     rounds,
     onRoundsChange,
+    closeCallRounds,
+    onCloseCallRoundsChange,
     availability,
     isHosting,
     error,
@@ -116,6 +121,9 @@ export function HostPanel(props: HostPanelProps) {
   const available = availability[difficulty] ?? 0;
   const levelLabel = LEVELS.find((l) => l.id === difficulty)?.label ?? "Mixed";
   const isQuiz = mode === "quiz";
+  const isCloseCall = mode === "closecall";
+  // Close Call has its own items, so the question bank doesn't limit it.
+  const canStart = isCloseCall || available > 0;
   const shortBank = isQuiz && available > 0 && available < questionCount;
   const teamChoices = Array.from({ length: MAX_TEAMS - MIN_TEAMS + 1 }, (_, i) => MIN_TEAMS + i);
 
@@ -132,10 +140,29 @@ export function HostPanel(props: HostPanelProps) {
       text: "Teams take turns spinning the wheel on the projector and answer from their devices.",
       icon: <Trophy className="w-6 h-6" aria-hidden="true" />,
     },
+    {
+      id: "closecall",
+      title: "Close Call",
+      text: "Everyone guesses a cyber number. Closest without going over wins the round.",
+      icon: <Gauge className="w-6 h-6" aria-hidden="true" />,
+    },
   ];
+  const formatTitle = formats.find((f) => f.id === mode)?.title ?? "Live Quiz";
+  const accent = (id: HostMode) =>
+    id === "quiz"
+      ? { card: "border-blue-500 bg-blue-50", icon: "bg-blue-100 text-blue-700" }
+      : id === "gameshow"
+        ? { card: "border-amber-400 bg-amber-50", icon: "bg-amber-100 text-amber-700" }
+        : { card: "border-orange-500 bg-orange-50", icon: "bg-orange-100 text-orange-700" };
 
-  const summary: [string, string][] = [
-    ["Format", isQuiz ? "Live Quiz" : "Game Show"],
+  const summary: [string, string][] = isCloseCall
+    ? [
+        ["Format", formatTitle],
+        ["Rounds", String(closeCallRounds)],
+        ["Scoring", "Closest without going over"],
+      ]
+    : [
+    ["Format", formatTitle],
     ["Level", `${levelLabel} · ${available} in bank`],
     ...(isQuiz
       ? ([
@@ -156,7 +183,7 @@ export function HostPanel(props: HostPanelProps) {
           <h3 id="host-format" className="text-lg font-bold text-slate-900">
             <span className="text-blue-600">1.</span> Choose a format
           </h3>
-          <div role="radiogroup" aria-labelledby="host-format" className="grid sm:grid-cols-2 gap-3">
+          <div role="radiogroup" aria-labelledby="host-format" className="grid sm:grid-cols-3 gap-3">
             {formats.map((f) => {
               const selected = mode === f.id;
               return (
@@ -166,20 +193,11 @@ export function HostPanel(props: HostPanelProps) {
                   aria-checked={selected}
                   onClick={() => onModeChange(f.id)}
                   className={cn(
-                    "flex items-start gap-4 p-4 rounded-2xl border-2 text-left transition-all focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-400/40",
-                    selected
-                      ? f.id === "quiz"
-                        ? "border-blue-500 bg-blue-50"
-                        : "border-amber-400 bg-amber-50"
-                      : "border-slate-200 bg-white hover:border-slate-300",
+                    "flex flex-col items-start gap-3 p-4 rounded-2xl border-2 text-left transition-all focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-400/40",
+                    selected ? accent(f.id).card : "border-slate-200 bg-white hover:border-slate-300",
                   )}
                 >
-                  <div
-                    className={cn(
-                      "p-3 rounded-xl shrink-0",
-                      f.id === "quiz" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700",
-                    )}
-                  >
+                  <div className={cn("p-3 rounded-xl shrink-0", accent(f.id).icon)}>
                     {f.icon}
                   </div>
                   <div>
@@ -198,6 +216,26 @@ export function HostPanel(props: HostPanelProps) {
             <span className="text-blue-600">2.</span> Set it up
           </h3>
 
+          {isCloseCall ? (
+            <>
+              <ChoiceGroup
+                label="Rounds"
+                hint="One number to guess per round. There's no clock: you reveal each answer when everyone has locked in."
+                choices={CLOSE_CALL_ROUND_CHOICES}
+                value={closeCallRounds as (typeof CLOSE_CALL_ROUND_CHOICES)[number]}
+                onChange={onCloseCallRoundsChange}
+              />
+              <div className="rounded-2xl bg-orange-50 border border-orange-200 p-4 text-sm text-orange-950 space-y-1">
+                <p className="font-bold">How Close Call works</p>
+                <p>
+                  Each round asks for a number, like how many 4-digit PINs exist or which port HTTPS uses. Students lock
+                  in a guess on their device. When you reveal, the closest guess <strong>without going over</strong> wins
+                  1,000 points, an exact guess wins 2,000, and anyone within 10% under gets 250.
+                </p>
+              </div>
+            </>
+          ) : (
+          <>
           <ChoiceGroup
             label="Difficulty"
             choices={LEVELS.map((l) => l.id)}
@@ -251,6 +289,8 @@ export function HostPanel(props: HostPanelProps) {
               />
             </>
           )}
+          </>
+          )}
         </section>
       </div>
 
@@ -274,14 +314,18 @@ export function HostPanel(props: HostPanelProps) {
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           onClick={onStart}
-          disabled={isHosting || available === 0}
+          disabled={isHosting || !canStart}
           className={cn(
             "w-full py-4 rounded-2xl font-bold text-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-50 focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-400/50",
-            isQuiz ? "bg-white text-slate-900 hover:bg-blue-50" : "bg-amber-400 text-black hover:bg-amber-300",
+            isQuiz
+              ? "bg-white text-slate-900 hover:bg-blue-50"
+              : isCloseCall
+                ? "bg-orange-400 text-black hover:bg-orange-300"
+                : "bg-amber-400 text-black hover:bg-amber-300",
           )}
         >
           <Play className="w-5 h-5 fill-current" aria-hidden="true" />
-          {isHosting ? "Starting…" : isQuiz ? "Start Live Quiz" : "Start Game Show"}
+          {isHosting ? "Starting…" : `Start ${formatTitle}`}
         </motion.button>
         <p className={cn("text-xs", error ? "text-rose-300 font-semibold" : "text-slate-400")} role={error ? "alert" : undefined}>
           {error || "You'll get a 6-letter code. Students enter it on the home page to join."}

@@ -367,6 +367,45 @@ describe("session lifecycle", () => {
     expect(room.timePerQuestion).toBe(0);
   }, 15_000);
 
+  it("runs a Close Call game over HTTP, with guesses and the answer hidden until the reveal", async () => {
+    const { token } = (await (await login("10.0.0.41")).json()) as { token: string };
+    const post = (path: string, body: unknown, auth = false) =>
+      fetch(`${BASE}/api/session/${path}`, {
+        method: "POST",
+        headers: auth ? authHeaders(token) : { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const created = await fetch(`${BASE}/api/session`, {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify({ mode: "closecall", questionCount: 5, difficulty: "all", timePerQuestion: 20 }),
+    });
+    const { code } = (await created.json()) as { code: string };
+    const p: any = await (await post(`${code}/join`, { name: "Sam" })).json();
+    await post(`${code}/start`, { durationMinutes: 120 }, true);
+
+    const g = await post(`${code}/closecall/guess`, { playerId: p.playerId, playerToken: p.playerToken, guess: "1,234,567" });
+    expect(g.status).toBe(200);
+    let room: any = await (await fetch(`${BASE}/api/session/${code}`)).json();
+    expect(room.closecall).toMatchObject({ total: 5, phase: "guessing", lockedIn: [p.playerId], result: null });
+    expect(JSON.stringify(room)).not.toContain("1234567");
+
+    // Only the instructor can reveal or move on.
+    expect((await post(`${code}/closecall/reveal`, {})).status).toBe(401);
+    expect((await post(`${code}/closecall/next`, {}, true)).status).toBe(409);
+
+    room = await (await post(`${code}/closecall/reveal`, {}, true)).json();
+    expect(room.closecall.phase).toBe("revealed");
+    expect(typeof room.closecall.result.answer).toBe("number");
+    expect(room.closecall.result.entries[0]).toMatchObject({ playerId: p.playerId, guess: 1_234_567 });
+
+    room = await (await post(`${code}/closecall/next`, {}, true)).json();
+    expect(room.closecall.index).toBe(1);
+
+    await fetch(`${BASE}/api/session/${code}`, { method: "DELETE", headers: authHeaders(token) });
+  });
+
   it("returns 404 for a nonexistent session code", async () => {
     const getRes = await fetch(`${BASE}/api/session/ZZZZZZ`);
     expect(getRes.status).toBe(404);

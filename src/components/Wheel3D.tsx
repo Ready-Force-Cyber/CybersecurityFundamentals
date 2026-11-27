@@ -259,8 +259,16 @@ function CameraRig({ spin, reducedMotion }: { spin: WheelSpin; reducedMotion: bo
   return null;
 }
 
-export default function Wheel3D({ rotation, duration, onTick, className, reducedMotion = false }: GameWheelProps) {
-  const spin = useWheelSpin(rotation, duration, onTick);
+export default function Wheel3D({
+  rotation,
+  duration,
+  onTick,
+  onSpinStart,
+  onLand,
+  className,
+  reducedMotion = false,
+}: GameWheelProps) {
+  const spin = useWheelSpin(rotation, duration, { onTick, onSpinStart, onLand });
 
   // Render every frame only while something moves: the spin, then the landing
   // flash and the camera easing back. Otherwise draw on demand, so a wheel

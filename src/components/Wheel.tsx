@@ -96,7 +96,17 @@ export interface WheelSpin {
  * rules and stop on the same segment: a fast start, a long coast, a small
  * overshoot past the target, then a settle back onto it.
  */
-export function useWheelSpin(rotation: number, duration: number, onTick?: () => void): WheelSpin {
+/** What a spin reports as it happens, e.g. to play sounds in time with it. */
+export interface WheelEvents {
+  /** Each time a segment boundary passes the pointer while spinning. */
+  onTick?: () => void;
+  /** An animated spin begins. */
+  onSpinStart?: () => void;
+  /** An animated spin comes to rest (not called for a jump with no animation). */
+  onLand?: () => void;
+}
+
+export function useWheelSpin(rotation: number, duration: number, events: WheelEvents = {}): WheelSpin {
   const rot = useMotionValue(rotation);
   const [spinning, setSpinning] = useState(false);
   const [settled, setSettled] = useState(false);
@@ -105,8 +115,9 @@ export function useWheelSpin(rotation: number, duration: number, onTick?: () => 
   spinningRef.current = spinning;
   const lastSegment = useRef(segmentAtPointer(rotation));
   const direction = useRef(1);
-  const onTickRef = useRef(onTick);
-  onTickRef.current = onTick;
+  // Read the latest callbacks without restarting the spin when they change.
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
 
   useEffect(() => {
     const from = rot.get();
@@ -120,6 +131,7 @@ export function useWheelSpin(rotation: number, duration: number, onTick?: () => 
     direction.current = rotation > from ? 1 : -1;
     setSpinning(true);
     setSettled(false);
+    eventsRef.current.onSpinStart?.();
     const controls = animate(rot, [from, rotation + direction.current * OVERSHOOT_DEGREES, rotation], {
       duration,
       times: [0, 0.86, 1],
@@ -131,6 +143,7 @@ export function useWheelSpin(rotation: number, duration: number, onTick?: () => 
     controls.then(() => {
       setSpinning(false);
       setSettled(true);
+      eventsRef.current.onLand?.();
     });
     return () => controls.stop();
   }, [rotation, duration, rot]);
@@ -141,28 +154,30 @@ export function useWheelSpin(rotation: number, duration: number, onTick?: () => 
     const segment = segmentAtPointer(r);
     if (segment !== lastSegment.current) {
       lastSegment.current = segment;
-      if (spinningRef.current) onTickRef.current?.();
+      if (spinningRef.current) eventsRef.current.onTick?.();
     }
   });
 
   return { rot, spinning, settled, direction, landedIndex: settled ? segmentAtPointer(rotation) : null };
 }
 
-export interface WheelFaceProps {
+export interface WheelFaceProps extends WheelEvents {
   /** Rotation in degrees; the pointer is at the top. */
   rotation: number;
   /** Seconds the wheel takes to reach `rotation`; 0 jumps straight there. */
   duration: number;
-  /** Called each time a segment boundary passes the pointer while spinning. */
-  onTick?: () => void;
   /** Sizing classes for the square wrapper; the wheel fills it. */
   className?: string;
 }
 
 /** The wheel itself: pointer, rim lights and the rotating face. */
-export function WheelFace({ rotation, duration, onTick, className }: WheelFaceProps) {
+export function WheelFace({ rotation, duration, onTick, onSpinStart, onLand, className }: WheelFaceProps) {
   const R = 150;
-  const { rot, spinning, settled, direction, landedIndex } = useWheelSpin(rotation, duration, onTick);
+  const { rot, spinning, settled, direction, landedIndex } = useWheelSpin(rotation, duration, {
+    onTick,
+    onSpinStart,
+    onLand,
+  });
 
   // The pointer is a flapper: it is knocked sideways as each boundary passes
   // and springs back while the wheel crosses the segment.

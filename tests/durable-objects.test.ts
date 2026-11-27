@@ -678,3 +678,65 @@ describe("RoomDO live quiz", () => {
     expect(bob.playerId).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Close Call: closest guess without going over.
+// ---------------------------------------------------------------------------
+describe("RoomDO — Close Call mode", () => {
+  async function newGame(rounds = 2) {
+    const room = new RoomDO(fakeState());
+    await room.fetch(req("create", { code: "CC1", mode: "closecall", questionCount: rounds, questions: CYBER_QUESTIONS }));
+    return room;
+  }
+  const json = async (res: Response) => (await res.json()) as any;
+
+  it("plays a whole game: guesses stay hidden until the reveal, the closest under scores, and it ends itself", async () => {
+    const room = await newGame(2);
+    const a = await json(await room.fetch(req("join", { name: "A" })));
+    const b = await json(await room.fetch(req("join", { name: "B" })));
+    const guess = (p: any, value: unknown) =>
+      room.fetch(req("closecall-guess", { playerId: p.playerId, playerToken: p.playerToken, guess: value }));
+
+    // No guessing before the start.
+    expect((await guess(a, 1)).status).toBe(409);
+    await room.fetch(req("start", { durationMinutes: 120 }));
+
+    let state = await json(await room.fetch(req("state")));
+    expect(state.mode).toBe("closecall");
+    expect(state.closecall).toMatchObject({ index: 0, total: 2, phase: "guessing", lockedIn: [] });
+    expect(state.closecall.item).not.toHaveProperty("answer");
+
+    // A wrong token is refused; real guesses lock in without showing values.
+    expect((await room.fetch(req("closecall-guess", { playerId: a.playerId, playerToken: "nope", guess: 1 }))).status).toBe(403);
+    expect((await guess(a, 0)).status).toBe(200);
+    expect((await guess(b, 999_999_999)).status).toBe(200);
+    state = await json(await room.fetch(req("state")));
+    expect(state.closecall.lockedIn.sort()).toEqual([a.playerId, b.playerId].sort());
+    expect(state.closecall.result).toBeNull();
+    expect(JSON.stringify(state)).not.toContain("999999999");
+
+    // Reveal: A guessed 0 (never over), B guessed huge (always over).
+    state = await json(await room.fetch(req("closecall-reveal", {})));
+    expect(state.closecall.phase).toBe("revealed");
+    expect(state.closecall.result.answer).toBeGreaterThan(0);
+    expect(state.closecall.result.winners).toEqual([a.playerId]);
+    const scoreOf = (id: string) => state.players.find((p: any) => p.id === id).score;
+    expect(scoreOf(a.playerId)).toBe(1000);
+    expect(scoreOf(b.playerId)).toBe(0);
+    expect((await guess(a, 5)).status).toBe(409);
+
+    // Next round, then the last reveal and next ends the game.
+    state = await json(await room.fetch(req("closecall-next", {})));
+    expect(state.closecall).toMatchObject({ index: 1, phase: "guessing", lockedIn: [] });
+    await room.fetch(req("closecall-reveal", {}));
+    state = await json(await room.fetch(req("closecall-next", {})));
+    expect(state.status).toBe("finished");
+    expect(state.closecall.phase).toBe("final");
+  });
+
+  it("refuses Close Call actions in another mode", async () => {
+    const room = new RoomDO(fakeState());
+    await room.fetch(req("create", { code: "Q1", mode: "quiz", questions: CYBER_QUESTIONS }));
+    expect((await room.fetch(req("closecall-reveal", {}))).status).toBe(409);
+  });
+});

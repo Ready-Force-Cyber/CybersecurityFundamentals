@@ -21,6 +21,15 @@ import {
   nextTurn,
   activeTeam,
 } from "../lib/gameshow";
+import {
+  type CloseCallState,
+  createCloseCallState,
+  submitGuess,
+  revealRound,
+  nextRound,
+  closeCallView,
+} from "../lib/closecall";
+import { CLOSE_CALL_ITEMS } from "../server-data/closecall-items";
 
 // One Durable Object instance per room code. Holds the live session state that
 // the in-memory Map held in the Node server — but durably and consistently,
@@ -41,8 +50,11 @@ export interface PlayerRec {
 export interface RoomRec {
   code: string;
   status: "waiting" | "started" | "finished";
-  /** "quiz" is the original everyone-answers mode; "gameshow" is team play. */
-  mode: "quiz" | "gameshow";
+  /**
+   * "quiz" is the original everyone-answers mode; "gameshow" is team play on
+   * the wheel; "closecall" is closest-guess-without-going-over.
+   */
+  mode: "quiz" | "gameshow" | "closecall";
   difficulty: string;
   questionCount: number;
   timePerQuestion: number;
@@ -52,6 +64,8 @@ export interface RoomRec {
   players: Record<string, PlayerRec>;
   /** Present only in game-show mode. */
   gameshow?: GameShowState;
+  /** Present only in Close Call mode. */
+  closecall?: CloseCallState;
   /**
    * Snapshot of the question bank taken when the room is created. The bank
    * itself lives in GlobalDO, but copying it here keeps serving and grading
@@ -83,6 +97,8 @@ function publicRoom(r: RoomRec) {
     gameshow: r.gameshow
       ? { ...r.gameshow, question: publicQuestion(r, r.gameshow.questionId) }
       : undefined,
+    // Close Call: no answer and no guess values until the host reveals.
+    closecall: r.closecall ? closeCallView(r.closecall, CLOSE_CALL_ITEMS) : undefined,
   };
 }
 
@@ -130,10 +146,11 @@ export class RoomDO {
 
     if (action === "create") {
       const gameshowMode = body.mode === "gameshow";
+      const closeCallMode = body.mode === "closecall";
       const r: RoomRec = {
         code: body.code,
         status: "waiting",
-        mode: gameshowMode ? "gameshow" : "quiz",
+        mode: gameshowMode ? "gameshow" : closeCallMode ? "closecall" : "quiz",
         difficulty: ["all", "easy", "medium", "hard"].includes(body.difficulty) ? body.difficulty : "all",
         questionCount: Number(body.questionCount) || 10,
         timePerQuestion: normalizeTimePerQuestion(body.timePerQuestion),
@@ -142,6 +159,7 @@ export class RoomDO {
         createdAt: Date.now(),
         players: {},
         gameshow: gameshowMode ? createGameShowState(Number(body.teamCount) || 2, Number(body.rounds) || undefined) : undefined,
+        closecall: closeCallMode ? createCloseCallState(CLOSE_CALL_ITEMS, Number(body.questionCount)) : undefined,
         // The worker passes the bank in, since it lives in GlobalDO.
         questions: Array.isArray(body.questions) ? body.questions : undefined,
         usedQuestionIds: [],
@@ -278,6 +296,59 @@ export class RoomDO {
         r.gameshow = applyAnswer(r.gameshow, correct);
         await this.save(r);
         return json({ correct, correctAnswer: question.correctAnswer, room: publicRoom(r) });
+      }
+
+      // ---- Close Call --------------------------------------------------
+      case "closecall-guess": {
+        if (r.mode !== "closecall" || !r.closecall) {
+          return json({ error: "This session is not a Close Call game." }, 409);
+        }
+        if (r.status !== "started") return json({ error: "The game isn't running right now." }, 409);
+        const p = r.players[body.playerId];
+        if (!p || p.token !== body.playerToken) return json({ error: "Invalid player." }, 403);
+        const result = submitGuess(r.closecall, p.id, body.guess);
+        if (!result.ok) return json({ error: result.error }, result.status);
+        r.closecall = result.state;
+        await this.save(r);
+        return json({ guess: result.guess, room: publicRoom(r) });
+      }
+
+      case "closecall-reveal": {
+        if (r.mode !== "closecall" || !r.closecall) {
+          return json({ error: "This session is not a Close Call game." }, 409);
+        }
+        const item = CLOSE_CALL_ITEMS.find((i) => i.id === r.closecall!.itemIds[r.closecall!.index]);
+        if (!item) return json({ error: "This round's item is no longer available." }, 409);
+        const result = revealRound(r.closecall, item);
+        if (!result.ok) return json({ error: result.error }, result.status);
+        r.closecall = result.state;
+        for (const entry of result.result.entries) {
+          const p = r.players[entry.playerId];
+          if (!p) continue;
+          p.score += entry.points;
+          p.history.push({
+            question: { id: item.id, question: item.prompt, concept: item.concept, difficulty: "medium" },
+            correct: entry.points > 0,
+            timeTaken: 0,
+          });
+        }
+        await this.save(r);
+        return json(publicRoom(r));
+      }
+
+      case "closecall-next": {
+        if (r.mode !== "closecall" || !r.closecall) {
+          return json({ error: "This session is not a Close Call game." }, 409);
+        }
+        const result = nextRound(r.closecall);
+        if (!result.ok) return json({ error: result.error }, result.status);
+        r.closecall = result.state;
+        if (result.finished) {
+          r.status = "finished";
+          r.endTime = Date.now();
+        }
+        await this.save(r);
+        return json(publicRoom(r));
       }
 
       case "next-turn": {

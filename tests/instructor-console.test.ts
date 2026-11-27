@@ -16,9 +16,22 @@ describe("sanitizePrefs", () => {
       timePerQuestion: 0,
       teamCount: 4,
       rounds: 5,
+      closeCallRounds: 10,
       sound: false,
+      lobbyMusic: false,
     };
     expect(sanitizePrefs(prefs)).toEqual(prefs);
+  });
+
+  it("remembers Close Call as a format, with one of its round counts", () => {
+    expect(sanitizePrefs({ mode: "closecall", closeCallRounds: 5 })).toMatchObject({ mode: "closecall", closeCallRounds: 5 });
+    expect(sanitizePrefs({ closeCallRounds: 99 }).closeCallRounds).toBe(DEFAULT_PREFS.closeCallRounds);
+  });
+
+  // Instructors who saved their setup before waiting-room music existed get it on.
+  it("turns waiting-room music on when nothing was saved for it", () => {
+    expect(sanitizePrefs({ sound: false }).lobbyMusic).toBe(true);
+    expect(sanitizePrefs({ lobbyMusic: "no" }).lobbyMusic).toBe(true);
   });
 
   it("replaces anything it doesn't offer, field by field", () => {

@@ -153,7 +153,7 @@ export interface QuizPlayer {
 /** The slice of a room record the quiz reads. */
 export interface QuizRoom {
   status: "waiting" | "started" | "finished";
-  mode: "quiz" | "gameshow";
+  mode: "quiz" | "gameshow" | "closecall";
   endTime: number;
   timePerQuestion: number;
   quizQuestions?: Question[];

@@ -29,6 +29,8 @@ import {
   KeyRound,
   Copy,
   Crown,
+  Home,
+  VolumeX,
 } from "lucide-react";
 import confetti from "canvas-confetti";
 import type { Question, ConceptId } from "./constants";
@@ -53,6 +55,8 @@ import { QuestionBankAdmin } from "./components/QuestionBankAdmin";
 import { HomeHero } from "./components/HomeHero";
 import { InstructorSignIn } from "./components/InstructorSignIn";
 import { SiteHeader } from "./components/SiteHeader";
+import { WinnersPodium } from "./components/WinnersPodium";
+import { lobbyMusic } from "./lib/lobby-music";
 import { HostPanel } from "./components/admin/HostPanel";
 import { SessionsPanel } from "./components/admin/SessionsPanel";
 import { SettingsPanel } from "./components/admin/SettingsPanel";
@@ -63,6 +67,8 @@ import { SoloGameShow } from "./components/SoloGameShow";
 import { GameShowStage } from "./components/GameShowStage";
 import { GameShowHost } from "./components/GameShowHost";
 import { GameShowPlayer } from "./components/GameShowPlayer";
+import { CloseCallHost } from "./components/CloseCallHost";
+import { CloseCallPlayer } from "./components/CloseCallPlayer";
 import {
   api,
   getInstructorToken,
@@ -87,6 +93,7 @@ type GameState =
   | "playing"
   /** Student view during a game-show session (team play, no per-question timer). */
   | "gameshow_play"
+  | "closecall_play"
   | "results"
   | "admin_dashboard"
   | "campaign";
@@ -219,11 +226,15 @@ export default function App() {
   // fall back to a timed value.
   const activeTimePerQuestion = roomData?.timePerQuestion ?? timePerQuestion;
 
+  /** Game shows the host runs turn by turn, with no session clock. */
+  const hostPacedMode = roomData?.mode === "gameshow" || roomData?.mode === "closecall";
+
   /** Screens that show the game-show stage rather than the cyber background. */
   const isGameShowScreen =
     (gameState === "playing" && !inLiveQuiz) ||
     gameState === "gameshow_play" ||
-    (gameState === "hosting" && roomData?.mode === "gameshow" && roomData?.status === "started");
+    gameState === "closecall_play" ||
+    (gameState === "hosting" && hostPacedMode && roomData?.status === "started");
   const isUntimed = activeTimePerQuestion === 0;
 
   const filteredQuestions = useMemo(() => {
@@ -352,6 +363,15 @@ export default function App() {
     audio.setEnabled(prefs.sound);
   }, [prefs.sound]);
 
+  // Waiting-room music: on the host's screen while students are joining. It
+  // fades out when the session begins, is cancelled, or the host leaves.
+  const hostWaiting = gameState === "hosting" && !!roomId && roomData?.status === "waiting";
+  useEffect(() => {
+    if (hostWaiting && prefs.lobbyMusic) lobbyMusic.start();
+    else lobbyMusic.stop();
+  }, [hostWaiting, prefs.lobbyMusic]);
+  useEffect(() => () => lobbyMusic.stop(), []);
+
   // Question bank — fetched from the server (seeded from the built-in set).
   // Fetched again when an instructor signs in or out: students get a copy
   // without answers, the instructor gets the full bank to edit. Editing the
@@ -416,6 +436,8 @@ export default function App() {
           // students go to the team view rather than the solo quiz loop.
           if (roomData?.mode === "gameshow") {
             setGameState("gameshow_play");
+          } else if (roomData?.mode === "closecall") {
+            setGameState("closecall_play");
           } else {
             startGameLocally();
           }
@@ -520,7 +542,8 @@ export default function App() {
     try {
       const { code } = await api.createSession({
         difficulty: prefs.difficulty,
-        questionCount: prefs.questionCount,
+        // Close Call's "questions" are its rounds.
+        questionCount: prefs.mode === "closecall" ? prefs.closeCallRounds : prefs.questionCount,
         timePerQuestion: prefs.timePerQuestion,
         hostName: user?.displayName || "Instructor",
         mode: prefs.mode,
@@ -568,7 +591,9 @@ export default function App() {
   const startRoomGame = async () => {
     if (!roomId) return;
     try {
-      await api.startSession(roomId, sessionDurationMinutes);
+      // Game shows are paced by the host, so they get the longest allowed
+      // session rather than the quiz's time limit (which they don't show).
+      await api.startSession(roomId, hostPacedMode ? 120 : sessionDurationMinutes);
     } catch (error) {
       console.error("Failed to start session:", error);
     }
@@ -624,6 +649,39 @@ export default function App() {
     } finally {
       setGameShowBusy(false);
     }
+  };
+
+  // ---- Close Call ----------------------------------------------------------
+  const handleCloseCallReveal = async () => {
+    if (!roomId || gameShowBusy) return;
+    setGameShowBusy(true);
+    try {
+      setRoomData(await api.closeCallReveal(roomId));
+    } catch (error) {
+      console.error("Reveal failed:", error);
+    } finally {
+      setGameShowBusy(false);
+    }
+  };
+
+  const handleCloseCallNext = async () => {
+    if (!roomId || gameShowBusy) return;
+    setGameShowBusy(true);
+    try {
+      setRoomData(await api.closeCallNext(roomId));
+    } catch (error) {
+      console.error("Next round failed:", error);
+    } finally {
+      setGameShowBusy(false);
+    }
+  };
+
+  /** Student locks in a guess. Throws so the guess box can show the problem. */
+  const handleCloseCallGuess = async (guess: number) => {
+    const info = playerInfoRef.current;
+    if (!info || !roomId) throw new Error("You're not in a game right now.");
+    const res = await api.closeCallGuess(roomId, info.id, info.token, guess);
+    setRoomData(res.room);
   };
 
   // Host ends the live session early; this also ends it for every student.
@@ -1046,7 +1104,7 @@ export default function App() {
         // The game-show projector reads better on the dark stage treatment,
         // so it opts out of the light chrome the other host screens use.
         (gameState === "login" || gameState === "lobby" || gameState === "admin_dashboard" || gameState === "waiting" || gameState === "campaign" ||
-          (gameState === "hosting" && !(roomData?.mode === "gameshow" && roomData?.status === "started")))
+          (gameState === "hosting" && !(hostPacedMode && roomData?.status === "started")))
           ? "bg-slate-50 text-slate-900 overflow-y-auto"
           : "bg-[#050505] text-slate-100 selection:bg-blue-500/30 overflow-hidden",
       )}
@@ -1380,7 +1438,8 @@ export default function App() {
             </motion.div>
           )}
 
-          {gameState === "lobby" && (
+          {/* The instructor console: only ever for a signed-in instructor. */}
+          {gameState === "lobby" && isAdmin && (
             <motion.div
               key="lobby"
               initial={{ opacity: 0, y: 20 }}
@@ -1440,6 +1499,8 @@ export default function App() {
                     onTeamCountChange={(teamCount) => updatePrefs({ teamCount })}
                     rounds={prefs.rounds}
                     onRoundsChange={(rounds) => updatePrefs({ rounds })}
+                    closeCallRounds={prefs.closeCallRounds}
+                    onCloseCallRoundsChange={(closeCallRounds) => updatePrefs({ closeCallRounds })}
                     availability={difficultyAvailability(bankQuestions, null)}
                     isHosting={isHosting}
                     error={hostError}
@@ -1683,7 +1744,9 @@ export default function App() {
                   <SettingsPanel
                     sound={prefs.sound}
                     onSoundChange={(sound) => updatePrefs({ sound })}
-                    onResetSetup={() => updatePrefs({ ...DEFAULT_PREFS, sound: prefs.sound })}
+                    lobbyMusic={prefs.lobbyMusic}
+                    onLobbyMusicChange={(on) => updatePrefs({ lobbyMusic: on })}
+                    onResetSetup={() => updatePrefs({ ...DEFAULT_PREFS, sound: prefs.sound, lobbyMusic: prefs.lobbyMusic })}
                     questions={bankQuestions}
                     onQuestionsChange={setBankQuestions}
                   />
@@ -1804,6 +1867,21 @@ export default function App() {
                 const live = started && !ended;
 
                 // Game-show sessions get the projector view once started.
+                if (roomData?.mode === "closecall" && roomData.closecall && started && !ended) {
+                  return (
+                    <CloseCallHost
+                      code={roomId}
+                      view={roomData.closecall}
+                      players={roomData.players}
+                      onReveal={handleCloseCallReveal}
+                      onNext={handleCloseCallNext}
+                      onEnd={endRoomGame}
+                      busy={gameShowBusy}
+                      reducedMotion={!!prefersReducedMotion}
+                    />
+                  );
+                }
+
                 if (roomData?.mode === "gameshow" && roomData.gameshow && started && !ended) {
                   return (
                     <GameShowHost
@@ -1851,6 +1929,33 @@ export default function App() {
                               ? "Session live. Students are playing now."
                               : "Share this code so students can join from the home page."}
                         </p>
+                        {!started && !ended && (
+                          <button
+                            onClick={() => updatePrefs({ lobbyMusic: !prefs.lobbyMusic })}
+                            aria-pressed={prefs.lobbyMusic}
+                            className={cn(
+                              "mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold transition-colors focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-300",
+                              prefs.lobbyMusic
+                                ? "bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100"
+                                : "bg-white border-slate-200 text-slate-500 hover:text-slate-800",
+                            )}
+                          >
+                            {prefs.lobbyMusic ? (
+                              <span aria-hidden="true" className="flex items-end gap-[2px] h-3.5">
+                                {[0, 1, 2, 3].map((i) => (
+                                  <span
+                                    key={i}
+                                    className="w-[3px] rounded-full bg-blue-600 music-bar"
+                                    style={{ animationDelay: `${i * 0.15}s` }}
+                                  />
+                                ))}
+                              </span>
+                            ) : (
+                              <VolumeX className="w-3.5 h-3.5" aria-hidden="true" />
+                            )}
+                            Waiting-room music: {prefs.lobbyMusic ? "On" : "Off"}
+                          </button>
+                        )}
                       </div>
 
                       {live && sessionTimeLeft !== null && (
@@ -1874,7 +1979,7 @@ export default function App() {
 
                     {/* Pre-start: session settings. A game show has no clock, so
                         the timer settings only apply to a live quiz. */}
-                    {!started && !ended && roomData?.mode !== "gameshow" && (
+                    {!started && !ended && !hostPacedMode && (
                       <div className="grid sm:grid-cols-2 gap-4">
                         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 flex flex-col items-center gap-4 shadow-sm">
                           <p className="text-xs font-bold text-slate-700 uppercase tracking-widest shrink-0">
@@ -1931,6 +2036,11 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* End of a live quiz: the top three on the winners' podium */}
+                    {ended && roomData?.mode !== "gameshow" && players.length > 0 && (
+                      <WinnersPodium players={players} reducedMotion={!!prefersReducedMotion} />
+                    )}
+
                     {/* Roster / live leaderboard */}
                     <div className="flex-1 space-y-4">
                       <div className="flex items-center justify-between px-2">
@@ -1940,11 +2050,11 @@ export default function App() {
                           ) : (
                             <Users className="w-5 h-5 text-blue-600" />
                           )}
-                          {live || ended ? "Live Leaderboard" : "Students Joined"}
+                          {ended ? "Final Leaderboard" : live ? "Live Leaderboard" : "Students Joined"}
                         </h3>
                         <span className="text-xs font-semibold uppercase text-slate-500">
                           {players.length}{" "}
-                          {live || ended ? "Playing" : "Joined"}
+                          {ended ? "Played" : live ? "Playing" : "Joined"}
                         </span>
                       </div>
 
@@ -2074,6 +2184,25 @@ export default function App() {
                   </>
                 );
               })()}
+            </motion.div>
+          )}
+
+          {gameState === "closecall_play" && roomData?.closecall && (
+            <motion.div
+              key="closecall_play"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex-1 flex flex-col overflow-y-auto"
+            >
+              <CloseCallPlayer
+                view={roomData.closecall}
+                myId={user?.uid}
+                players={roomData.players}
+                finished={roomData.status === "finished"}
+                onGuess={handleCloseCallGuess}
+                onExit={handleExitGame}
+                reducedMotion={!!prefersReducedMotion}
+              />
             </motion.div>
           )}
 
@@ -2575,6 +2704,18 @@ export default function App() {
                 </p>
               </div>
 
+              {/* Live quiz: the top three appear once the whole session is over,
+                  so early finishers see the final podium, not a partial one. */}
+              {roomId && roomData && roomData.mode !== "gameshow" && (
+                roomData.status === "finished" || (roomData.endTime > 0 && Date.now() >= roomData.endTime) ? (
+                  <WinnersPodium players={players} youUid={user?.uid} reducedMotion={!!prefersReducedMotion} />
+                ) : (
+                  <p role="status" className="text-center text-sm font-medium text-slate-500">
+                    Waiting for the rest of the class to finish. The top three will appear here when the session ends.
+                  </p>
+                )
+              )}
+
               <div className="grid lg:grid-cols-2 gap-8">
                 {/* Personal Stats Overview */}
                 <div className="bg-white/5 border border-white/10 rounded-[2.5rem] p-8 flex flex-col gap-6">
@@ -2757,11 +2898,13 @@ export default function App() {
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  onClick={() => setGameState(activeCampaignConcept ? "campaign" : "lobby")}
+                  // A solo mission goes back to the map; a student in a live
+                  // session leaves it and goes home (never the instructor console).
+                  onClick={activeCampaignConcept ? () => setGameState("campaign") : handleExitGame}
                   className="flex-1 py-5 bg-white text-black font-bold rounded-2xl hover:bg-slate-200 transition-all flex items-center justify-center gap-2"
                 >
-                  {activeCampaignConcept ? <MapIcon className="w-5 h-5" /> : <Users className="w-5 h-5" />}
-                  {activeCampaignConcept ? "RETURN TO CAMPAIGN" : "OPERATIONS CENTER"}
+                  {activeCampaignConcept ? <MapIcon className="w-5 h-5" /> : <Home className="w-5 h-5" />}
+                  {activeCampaignConcept ? "RETURN TO CAMPAIGN" : "BACK TO HOME"}
                 </motion.button>
               </div>
             </motion.div>
