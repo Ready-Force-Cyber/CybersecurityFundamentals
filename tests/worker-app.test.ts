@@ -142,6 +142,72 @@ describe("Worker: answer key exposure", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("adds, edits and removes one question at a time, for instructors only", async () => {
+    const env = makeEnv();
+    const newQuestion = {
+  concept: "integrity",
+  difficulty: "easy",
+  question: "A file's checksum changed after download. What does that suggest?",
+  options: ["The file was altered", "The file is faster", "The file is encrypted", "Nothing at all"],
+  correctAnswer: "The file was altered",
+  explanation: "A different checksum means the contents are not what was published.",
+};
+
+    expect((await call(env, "/api/questions", { body: { question: newQuestion } })).status).toBe(401);
+    const { token } = (await (await signIn(env)).json()) as any;
+
+    // Add
+    const added = await call(env, "/api/questions", { body: { question: newQuestion }, token });
+    expect(added.status).toBe(201);
+    const { question, questions } = (await added.json()) as any;
+    expect(question.id).toBeTruthy();
+    expect(questions).toHaveLength(CYBER_QUESTIONS.length + 1);
+
+    // Students see it (without the answer), and it grades on the server.
+    const publicBank: any = await (await call(env, "/api/questions")).json();
+    const seen = publicBank.questions.find((q: any) => q.id === question.id);
+    expect(seen.question).toBe(newQuestion.question);
+    expect(seen).not.toHaveProperty("correctAnswer");
+    const graded: any = await (
+      await call(env, "/api/questions/check", { body: { questionId: question.id, answer: "The file was altered" } })
+    ).json();
+    expect(graded.correct).toBe(true);
+
+    // Edit
+    const edited = await call(env, `/api/questions/${question.id}`, {
+      method: "PUT",
+      body: { question: { ...newQuestion, difficulty: "hard" } },
+      token,
+    });
+    expect(edited.status).toBe(200);
+    expect(((await edited.json()) as any).question).toMatchObject({ id: question.id, difficulty: "hard" });
+
+    // An invalid edit is refused and changes nothing.
+    const bad = await call(env, `/api/questions/${question.id}`, {
+      method: "PUT",
+      body: { question: { ...newQuestion, correctAnswer: "" } },
+      token,
+    });
+    expect(bad.status).toBe(400);
+
+    // Remove
+    const removed = await call(env, `/api/questions/${question.id}`, { method: "DELETE", token });
+    expect(removed.status).toBe(200);
+    expect(((await removed.json()) as any).questions).toHaveLength(CYBER_QUESTIONS.length);
+    const again = await call(env, `/api/questions/${question.id}`, { method: "DELETE", token });
+    expect(again.status).toBe(404);
+  });
+
+  it("refuses to save the student copy of the bank over the answer key", async () => {
+    const env = makeEnv();
+    const { token } = (await (await signIn(env)).json()) as any;
+    const student: any = await (await call(env, "/api/questions")).json();
+    const res = await call(env, "/api/questions", { method: "PUT", body: { questions: student.questions }, token });
+    expect(res.status).toBe(400);
+    const full: any = await (await call(env, "/api/questions", { token })).json();
+    expect(full.questions[0].correctAnswer).toBeTruthy();
+  });
+
   it("lets only an instructor reset the bank, and restores the built-in set", async () => {
     const env = makeEnv();
     expect((await call(env, "/api/questions/reset", { body: {} })).status).toBe(401);

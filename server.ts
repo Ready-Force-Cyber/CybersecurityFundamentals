@@ -10,6 +10,7 @@ import { CYBER_QUESTIONS } from "./src/server-data/question-bank";
 import { computeMetrics } from "./src/lib/metrics";
 import { normalizeTimePerQuestion } from "./src/lib/session-settings";
 import { normalizeDisplayName } from "./src/lib/display-name";
+import { addQuestion, updateQuestion, removeQuestion, validateBank } from "./src/lib/bank-edits";
 import {
   type QuizProgress,
   toPublicQuestion,
@@ -280,14 +281,40 @@ async function startServer() {
     res.json({ questions: questionBank });
   });
 
+  // Replace the whole bank. Every question is checked first, so a bank with
+  // its answers stripped (the copy students get) can't be saved over the key.
   app.put("/api/questions", (req, res) => {
     if (!requireInstructor(req, res)) return;
-    const { questions } = req.body ?? {};
-    if (!Array.isArray(questions)) {
-      return res.status(400).json({ error: "Expected an array of questions." });
-    }
-    questionBank = questions.slice(0, 500);
+    const checked = validateBank(req.body?.questions);
+    if (!checked.ok) return res.status(checked.status).json({ error: checked.error });
+    questionBank = checked.value;
     res.json({ questions: questionBank });
+  });
+
+  // Add, edit and remove one question at a time. Each returns the bank as it
+  // now stands, so the admin screen shows exactly what the server holds.
+  app.post("/api/questions", (req, res) => {
+    if (!requireInstructor(req, res)) return;
+    const result = addQuestion(questionBank, req.body?.question);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    questionBank = result.value.bank;
+    res.status(201).json({ question: result.value.question, questions: questionBank });
+  });
+
+  app.put("/api/questions/:id", (req, res) => {
+    if (!requireInstructor(req, res)) return;
+    const result = updateQuestion(questionBank, req.params.id, req.body?.question);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    questionBank = result.value.bank;
+    res.json({ question: result.value.question, questions: questionBank });
+  });
+
+  app.delete("/api/questions/:id", (req, res) => {
+    if (!requireInstructor(req, res)) return;
+    const result = removeQuestion(questionBank, req.params.id);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    questionBank = result.value.bank;
+    res.json({ question: result.value.question, questions: questionBank });
   });
 
   // ---- Sessions ---------------------------------------------------------

@@ -39,7 +39,7 @@ export const CONCEPT_ICON_COMPONENTS: Record<string, LucideIcon> = {
 };
 
 /** One plain-language line per skill, shown when a student picks it on the map. */
-const CONCEPT_BLURBS: Record<string, string> = {
+export const CONCEPT_BLURBS: Record<string, string> = {
   art_of_defending:
     "Think like a defender: spot threats, stack up protections, and know what to do when something goes wrong.",
   confidentiality: "Keep private information private, so only the right people can see it.",
