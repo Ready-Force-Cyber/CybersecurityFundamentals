@@ -25,7 +25,7 @@ function LogoTile({ size, alt }: { size: "md" | "lg"; alt: string }) {
 
 export function AboutReadyForce() {
   return (
-    <section aria-labelledby="about-rfc-heading" className="w-full">
+    <section id="about" aria-labelledby="about-rfc-heading" className="w-full scroll-mt-6">
       <div className="max-w-5xl mx-auto px-4 py-16 grid gap-10 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
         {/* Mission */}
         <div className="min-w-0">

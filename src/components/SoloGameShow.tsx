@@ -16,7 +16,8 @@ import {
   applySpin,
   applyAnswer,
 } from "../lib/gameshow";
-import { WheelFace, nextWheelRotation, SPIN_SECONDS } from "./Wheel";
+import { Podium } from "./Podium";
+import { GameWheel, nextWheelRotation, SPIN_SECONDS } from "./Wheel";
 
 // Solo practice as a one-player game show: spin the wheel to set what the
 // next question is worth, answer it, bank the points. Same wheel and scoring
@@ -225,7 +226,7 @@ export function SoloGameShow({
           : stage === "feedback" && reveal
             ? reveal.correct
               ? `Correct. You scored ${awarded} points. Your score is ${score}.`
-              : `Not quite. The correct answer is: ${reveal.correctAnswer}. Your score is ${score}.`
+              : `Not quite. The correct answer is: ${(reveal.correctAnswer ?? "").replace(/[.!?]+$/, "")}. Your score is ${score}.`
             : "";
 
   return (
@@ -311,9 +312,10 @@ export function SoloGameShow({
         {/* The wheel. On small screens it shrinks out of the way once a
             question is up, so the question is not pushed below the fold. */}
         <div className="flex flex-col items-center gap-3">
-          <WheelFace
+          <GameWheel
             rotation={rotation}
             duration={reducedMotion ? 0 : SPIN_SECONDS}
+            reducedMotion={reducedMotion}
             onTick={() => {
               const now = performance.now();
               if (now - lastTick.current < MIN_TICK_GAP_MS) return;
@@ -342,30 +344,45 @@ export function SoloGameShow({
                 initial={reducedMotion ? false : { opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={reducedMotion ? undefined : { opacity: 0 }}
-                className="rounded-3xl border border-white/10 bg-slate-950/70 backdrop-blur-sm p-6 sm:p-8 text-center space-y-5"
+                className="space-y-5"
               >
-                <div className="space-y-2">
-                  <h2 className="text-2xl sm:text-3xl font-black text-white">
+                {/* The player stands behind a contestant podium to spin. */}
+                <Podium
+                  spinning={stage === "spinning"}
+                  score={score}
+                  action={
+                    <button
+                      onClick={spin}
+                      disabled={stage === "spinning"}
+                      ref={focusQuietly}
+                      className={cn(
+                        "w-full sm:w-auto sm:min-w-[240px] py-4 px-8 rounded-2xl text-xl font-black transition-all",
+                        "bg-gradient-to-b from-amber-300 to-amber-500 text-black",
+                        "shadow-[0_6px_0_#92400e,0_10px_20px_rgba(0,0,0,0.45)]",
+                        "hover:from-amber-200 hover:to-amber-400",
+                        "active:translate-y-[4px] active:shadow-[0_2px_0_#92400e,0_4px_10px_rgba(0,0,0,0.45)]",
+                        "disabled:cursor-wait disabled:translate-y-[4px] disabled:shadow-[0_2px_0_#92400e]",
+                        "focus:outline-none focus-visible:ring-4 focus-visible:ring-amber-200",
+                      )}
+                    >
+                      {stage === "spinning" ? "Spinning…" : "SPIN THE WHEEL"}
+                    </button>
+                  }
+                >
+                  <h2 className="text-2xl sm:text-3xl font-black text-amber-300 tracking-wide [text-shadow:0_0_12px_rgba(251,191,36,0.45)]">
                     {stage === "spinning"
                       ? "Spinning…"
                       : qIndex === 0 && game.turnsTaken === 0
                         ? "Spin to start"
                         : `Spin for question ${qIndex + 1}`}
                   </h2>
-                  <p className="text-slate-400 max-w-md mx-auto">
+                  <p className="mt-1.5 text-sm text-cyan-100/80">
                     The wheel decides how many points your next question is worth.
                   </p>
-                </div>
-                <button
-                  onClick={spin}
-                  disabled={stage === "spinning"}
-                  ref={focusQuietly}
-                  className="w-full sm:w-auto sm:min-w-[260px] py-5 px-8 rounded-2xl bg-amber-400 text-black text-xl font-black hover:bg-amber-300 disabled:opacity-60 disabled:cursor-wait transition-colors focus:outline-none focus-visible:ring-4 focus-visible:ring-amber-200"
-                >
-                  {stage === "spinning" ? "Spinning…" : "SPIN THE WHEEL"}
-                </button>
+                </Podium>
+
                 {qIndex === 0 && game.turnsTaken === 0 && stage === "idle" && (
-                  <ul className="text-left text-sm text-slate-400 max-w-md mx-auto space-y-1.5 pt-2 border-t border-white/10">
+                  <ul className="rounded-2xl border border-white/10 bg-slate-950/70 backdrop-blur-sm p-4 text-left text-sm text-slate-400 max-w-lg mx-auto space-y-1.5">
                     <li>
                       <strong className="text-slate-200">A number</strong> is what your question is worth.
                     </li>

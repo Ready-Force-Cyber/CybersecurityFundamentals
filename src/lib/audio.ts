@@ -2,6 +2,15 @@ class AudioController {
   private ctx: AudioContext | null = null;
   private enabled: boolean = true;
 
+  /** Turn every sound effect on or off (an instructor setting). */
+  setEnabled(on: boolean) {
+    this.enabled = on;
+  }
+
+  isEnabled() {
+    return this.enabled;
+  }
+
   private getContext() {
     if (!this.ctx) {
       this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();

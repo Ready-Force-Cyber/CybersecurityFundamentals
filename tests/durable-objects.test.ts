@@ -194,16 +194,29 @@ describe("GlobalDO", () => {
     const g = new GlobalDO(fakeState());
     // A non-colliding id, so this asserts round-tripping rather than the
     // reconcile-by-id repair (covered in tests/questions.test.ts).
-    const custom = [{ id: "custom-1", question: "Q?", correctAnswer: "A" }];
-    await g.fetch(req("questions:set", { questions: custom }));
+    const custom = [
+      {
+        id: "custom-1",
+        concept: "integrity",
+        type: "mcq",
+        difficulty: "easy",
+        question: "Q?",
+        options: ["A", "B"],
+        correctAnswer: "A",
+        explanation: "Because.",
+      },
+    ];
+    const res = await g.fetch(req("questions:set", { questions: custom }));
+    expect(res.status).toBe(200);
     const { questions }: any = await (await g.fetch(req("questions:get"))).json();
     expect(questions).toEqual(custom);
   });
 
   it("repairs a stored bank that predates the concept field", async () => {
-    const g = new GlobalDO(fakeState());
+    const state = fakeState();
+    const g = new GlobalDO(state);
     const stale = CYBER_QUESTIONS.map(({ concept, ...rest }) => rest as any);
-    await g.fetch(req("questions:set", { questions: stale }));
+    await state.storage.put("questions", stale);
 
     const { questions }: any = await (await g.fetch(req("questions:get"))).json();
     expect(questions.every((q: any) => !!q.concept)).toBe(true);
@@ -213,11 +226,46 @@ describe("GlobalDO", () => {
     expect(again.questions.every((q: any) => !!q.concept)).toBe(true);
   });
 
-  it("stores an empty array (not the fallback) when questions is not an array", async () => {
+  it("refuses a bank that isn't a list, and keeps the one it has", async () => {
     const g = new GlobalDO(fakeState());
-    await g.fetch(req("questions:set", { questions: "not-an-array" }));
+    const res = await g.fetch(req("questions:set", { questions: "not-an-array" }));
+    expect(res.status).toBe(400);
     const { questions }: any = await (await g.fetch(req("questions:get"))).json();
-    expect(questions).toEqual([]);
+    expect(questions).toEqual(CYBER_QUESTIONS);
+  });
+
+  it("refuses a bank whose questions have no answers", async () => {
+    const g = new GlobalDO(fakeState());
+    const noAnswers = CYBER_QUESTIONS.map(({ correctAnswer, ...rest }) => rest);
+    const res = await g.fetch(req("questions:set", { questions: noAnswers }));
+    expect(res.status).toBe(400);
+    const { questions }: any = await (await g.fetch(req("questions:get"))).json();
+    expect(questions[0].correctAnswer).toBe(CYBER_QUESTIONS[0].correctAnswer);
+  });
+
+  it("adds, edits and removes single questions in storage", async () => {
+    const g = new GlobalDO(fakeState());
+    const q = {
+      concept: "availability",
+      difficulty: "medium",
+      question: "What keeps a site up when one server fails?",
+      options: ["Redundancy", "A longer password"],
+      correctAnswer: "Redundancy",
+      explanation: "A second server can take over.",
+    };
+    const added: any = await (await g.fetch(req("questions:add", { question: q }))).json();
+    expect(added.questions).toHaveLength(CYBER_QUESTIONS.length + 1);
+
+    const edited: any = await (
+      await g.fetch(req("questions:update", { id: added.question.id, question: { ...q, difficulty: "hard" } }))
+    ).json();
+    expect(edited.question.difficulty).toBe("hard");
+
+    const removed = await g.fetch(req("questions:delete", { id: added.question.id }));
+    expect(removed.status).toBe(200);
+    const { questions }: any = await (await g.fetch(req("questions:get"))).json();
+    expect(questions).toHaveLength(CYBER_QUESTIONS.length);
+    expect((await g.fetch(req("questions:delete", { id: "missing" }))).status).toBe(404);
   });
 
   it("rate-limits after the Nth attempt within the window", async () => {
