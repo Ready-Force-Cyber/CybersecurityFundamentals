@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 import { motion, AnimatePresence, useReducedMotion, MotionConfig } from "motion/react";
 import {
@@ -320,6 +320,41 @@ export default function App() {
     }
   }, []);
 
+  // A student's phone may reload the page, e.g. after they switch apps. Their
+  // player details are kept for this tab, so put them back in their game.
+  useEffect(() => {
+    if (getInstructorToken()) return;
+    let saved: { code: string; id: string; token: string; name: string } | null = null;
+    try {
+      saved = JSON.parse(sessionStorage.getItem(PLAYER_KEY) || "null");
+    } catch {
+      saved = null;
+    }
+    if (!saved?.code || !saved.id || !saved.token) return;
+    let cancelled = false;
+    api
+      .getRoom(saved.code)
+      .then((room) => {
+        if (cancelled) return;
+        const stillPlaying = room.status !== "finished" && room.players.some((p) => p.id === saved!.id);
+        if (!stillPlaying) {
+          sessionStorage.removeItem(PLAYER_KEY);
+          return;
+        }
+        playerInfoRef.current = saved;
+        setGuestName(saved!.name);
+        setUser({ uid: saved!.id, displayName: saved!.name, isAnonymous: true });
+        setRoomData(room);
+        setRoomId(saved!.code);
+        // The waiting screen sends them on to whatever game is running.
+        setGameState("waiting");
+      })
+      .catch(() => sessionStorage.removeItem(PLAYER_KEY));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Room polling — replaces the Firestore room + players listeners. Both the
   // host and students poll the same server endpoint for live state.
   useEffect(() => {
@@ -345,6 +380,13 @@ export default function App() {
         if (cancelled) return;
         // 404 → room was deleted/expired. Send everyone but the host home.
         if (err?.status === 404 && gameState !== "lobby" && gameState !== "login" && gameState !== "hosting") {
+          // Forget everything about the old session, or its "started" status
+          // would start a countdown the moment this student joins another.
+          sessionStorage.removeItem(PLAYER_KEY);
+          playerInfoRef.current = null;
+          setRoomData(null);
+          setPlayers([]);
+          setCountdown(null);
           setRoomId("");
           setGameState(user?.isAnonymous ? "login" : "lobby");
         }
@@ -443,7 +485,12 @@ export default function App() {
           }
         }
       }, 1000);
-      return () => clearInterval(interval);
+      return () => {
+        clearInterval(interval);
+        // If the countdown is interrupted (the status changed under it), reset
+        // it so the next real start can run it again instead of freezing.
+        setCountdown(null);
+      };
     }
   }, [roomData?.status, gameState]);
 
@@ -516,6 +563,10 @@ export default function App() {
     setJoinError("");
     try {
       const code = guestRoomId.toUpperCase();
+      // Never carry another session's state into this one.
+      setRoomData(null);
+      setPlayers([]);
+      setCountdown(null);
       const { playerId, playerToken } = await api.joinSession(code, guestName);
       const info = { code, id: playerId, token: playerToken, name: guestName };
       playerInfoRef.current = info;
@@ -829,6 +880,22 @@ export default function App() {
     }
   };
 
+  /**
+   * Live quiz: once an answer is graded, the feedback sits below the answers,
+   * off-screen on a phone. Scroll it into view and put focus on Continue.
+   * Stable (useCallback), so it runs once per feedback panel, not every tick.
+   */
+  const revealFeedback = useCallback(
+    (el: HTMLButtonElement | null) => {
+      if (!el) return;
+      window.setTimeout(() => {
+        el.focus({ preventScroll: true });
+        el.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion ? "auto" : "smooth" });
+      }, 350);
+    },
+    [prefersReducedMotion],
+  );
+
   const startGameLocally = () => {
     setGameState("playing");
     setConfirmExit(false);
@@ -894,6 +961,13 @@ export default function App() {
     setGameHistory([]);
     resetQuestionState();
     audio.playStart();
+  };
+
+  /** A student leaves the waiting room (e.g. they joined the wrong class). */
+  const handleLeaveWaiting = () => {
+    const info = playerInfoRef.current;
+    if (info && roomId) void api.leaveSession(roomId, info.id, info.token).catch(() => {});
+    handleExitGame();
   };
 
   const handleExitGame = () => {
@@ -1222,9 +1296,11 @@ export default function App() {
               exit={{ opacity: 0, scale: 1.05 }}
               className="flex-1 flex flex-col items-center w-full"
             >
-              <div className="max-w-5xl mx-auto w-full space-y-14 pb-10">
+              {/* On phones the join form comes straight after the slideshow, ahead
+                  of "How it works" (flex order); wider screens keep page order. */}
+              <div className="max-w-5xl mx-auto w-full flex flex-col gap-10 md:gap-14 pb-10">
                 {/* Site header, with the instructor sign-in at the right */}
-                <div className="relative z-20 !mb-8">
+                <div className="relative z-20 -mb-2 md:-mb-6">
                   <SiteHeader
                     onJoinClass={focusJoinForm}
                     onPracticeSolo={() => setGameState("campaign")}
@@ -1247,7 +1323,7 @@ export default function App() {
                 <HomeHero onJoinClass={focusJoinForm} onPracticeSolo={() => setGameState("campaign")} />
 
                 {/* How it works */}
-                <div id="how-it-works" className="w-full max-w-4xl mx-auto space-y-6 px-4 md:px-0 scroll-mt-6">
+                <div id="how-it-works" className="w-full max-w-4xl mx-auto space-y-6 px-4 md:px-0 scroll-mt-6 max-md:order-1">
                   <h2 className="text-center text-2xl font-extrabold tracking-tight text-slate-900">
                     How it works
                   </h2>
@@ -1327,6 +1403,10 @@ export default function App() {
                           placeholder="First name or nickname"
                           required
                           autoComplete="off"
+                          autoCapitalize="words"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          enterKeyHint="next"
                           maxLength={MAX_DISPLAY_NAME}
                           aria-describedby="student-name-hint"
                           value={guestName}
@@ -1362,16 +1442,22 @@ export default function App() {
                           required
                           maxLength={6}
                           autoComplete="off"
+                          // Phone keyboards: capitals, and no autocorrect
+                          // "fixing" a code like AB3X9K into a word.
+                          autoCapitalize="characters"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          enterKeyHint="go"
                           value={guestRoomId}
                           onChange={(e) => {
-                            setGuestRoomId(e.target.value.toUpperCase());
+                            setGuestRoomId(e.target.value.replace(/[^a-z0-9]/gi, "").toUpperCase());
                             if (joinError) setJoinError("");
                           }}
                           className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-slate-900 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-mono font-medium tracking-[0.3em]"
                         />
                       </div>
                       {joinError && (
-                        <p className="text-sm font-medium text-rose-600 text-center">
+                        <p role="alert" className="text-sm font-medium text-rose-600 text-center">
                           {joinError}
                         </p>
                       )}
@@ -1810,6 +1896,12 @@ export default function App() {
                   </span>
                   Waiting for your instructor to start the session...
                 </p>
+                <button
+                  onClick={handleLeaveWaiting}
+                  className="mt-2 inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-600 hover:text-slate-900 hover:bg-white/70 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50"
+                >
+                  <LogOut className="w-4 h-4" aria-hidden="true" /> Wrong class? Leave
+                </button>
               </div>
 
               <div className="flex-1 space-y-4">
@@ -1836,8 +1928,8 @@ export default function App() {
                       </div>
                       <div className="flex-1 truncate">
                         <p className="font-bold text-slate-900 truncate text-lg">{p.name}</p>
-                        <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                          Status: Connected
+                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                          Connected
                         </p>
                       </div>
                     </motion.div>
@@ -2298,9 +2390,9 @@ export default function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="flex-1 flex flex-col space-y-6"
+              className="flex-1 flex flex-col space-y-4 sm:space-y-6"
             >
-              <div className="flex gap-2 overflow-x-auto pb-2 mb-2 no-scrollbar">
+              <div className="flex gap-2 overflow-x-auto pb-1 sm:pb-2 sm:mb-2 no-scrollbar">
                 {(roomId
                   ? players
                   : [
@@ -2317,13 +2409,13 @@ export default function App() {
                     <div
                       key={p.uid}
                       className={cn(
-                        "flex flex-col items-center gap-1 p-2 rounded-xl border min-w-[80px]",
+                        "flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-xl border min-w-[84px]",
                         p.uid === user?.uid
                           ? "bg-emerald-500/20 border-emerald-500/50"
                           : "bg-white/5 border-white/10",
                       )}
                     >
-                      <p className="text-[8px] font-mono text-slate-500 uppercase truncate w-14 text-center">
+                      <p className="text-xs font-semibold text-slate-400 truncate w-[72px] text-center">
                         {p.name}
                       </p>
                       <p className="text-xs font-bold font-mono">{p.score}</p>
@@ -2331,30 +2423,30 @@ export default function App() {
                   ))}
               </div>
 
-              <div className="flex items-center justify-between bg-white/5 p-4 rounded-2xl border border-white/10 backdrop-blur-sm">
+              <div className="flex items-center justify-between gap-2 bg-white/5 p-3 sm:p-4 rounded-2xl border border-white/10 backdrop-blur-sm">
                 <div className="flex items-center gap-4">
-                  <div className="p-2 bg-emerald-500/20 rounded-lg">
+                  <div className="hidden sm:block p-2 bg-emerald-500/20 rounded-lg">
                     <Trophy className="w-5 h-5 text-emerald-500" />
                   </div>
                   <div>
-                    <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">
+                    <p className="text-xs font-mono text-slate-400 uppercase tracking-wider">
                       Score
                     </p>
-                    <p className="text-xl font-bold font-mono">
+                    <p className="text-lg sm:text-xl font-bold font-mono">
                       {score.toLocaleString()}
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-6">
+                <div className="flex items-center gap-3 sm:gap-6">
                   {sessionTimeLeft !== null && (
                     <div className="flex flex-col items-center">
-                      <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">
-                        Session End
+                      <p className="text-xs font-mono text-slate-400 uppercase tracking-wider">
+                        Time left
                       </p>
-                      <div className="flex items-center gap-2">
-                        <Timer className="w-4 h-4 text-emerald-500" />
-                        <span className="text-xl font-bold font-mono">
+                      <div className="flex items-center gap-1 sm:gap-2">
+                        <Timer className="hidden sm:block w-4 h-4 text-emerald-500" aria-hidden="true" />
+                        <span className="text-lg sm:text-xl font-bold font-mono">
                           {Math.floor(sessionTimeLeft / 60)
                             .toString()
                             .padStart(2, "0")}
@@ -2423,17 +2515,18 @@ export default function App() {
                 </div>
 
                 <div className="text-right">
-                  <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">
-                    Question
+                  <p className="text-xs font-mono text-slate-400 uppercase tracking-wider">
+                    <span className="sm:hidden">Q</span>
+                    <span className="hidden sm:inline">Question</span>
                   </p>
-                  <p className="text-xl font-bold font-mono">
+                  <p className="text-lg sm:text-xl font-bold font-mono">
                     {inLiveQuiz
                       ? `${(liveProgress?.index ?? 0) + 1}/${liveProgress?.total ?? 0}`
                       : `${currentQuestionIndex + 1}/${filteredQuestions.length}`}
                   </p>
                 </div>
 
-                <div className="flex items-center pl-4 border-l border-white/10">
+                <div className="flex items-center pl-2 sm:pl-4 border-l border-white/10">
                   {confirmExit ? (
                     <div className="flex items-center gap-2">
                       <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest hidden sm:block">
@@ -2457,9 +2550,9 @@ export default function App() {
                       onClick={() => setConfirmExit(true)}
                       title="Exit game"
                       aria-label="Exit game"
-                      className="p-2.5 bg-white/5 border border-white/10 rounded-lg text-slate-400 hover:text-rose-400 hover:border-rose-500/40 transition-all"
+                      className="w-11 h-11 flex items-center justify-center bg-white/5 border border-white/10 rounded-lg text-slate-400 hover:text-rose-400 hover:border-rose-500/40 transition-all"
                     >
-                      <LogOut className="w-4 h-4" />
+                      <LogOut className="w-4 h-4" aria-hidden="true" />
                     </button>
                   )}
                 </div>
@@ -2470,10 +2563,10 @@ export default function App() {
                   key={currentQuestion.id}
                   initial={{ x: 20, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
-                  className="space-y-8"
+                  className="space-y-5 sm:space-y-8"
                 >
-                  <div className="space-y-4 text-center max-w-2xl mx-auto">
-                    <span className="px-3 py-1 bg-white/5 rounded-full border border-white/10 text-[10px] font-mono uppercase text-emerald-500">
+                  <div className="space-y-3 sm:space-y-4 text-center max-w-2xl mx-auto">
+                    <span className="px-3 py-1 bg-white/5 rounded-full border border-white/10 text-xs font-mono uppercase text-emerald-500">
                       SEC-LEVEL: {currentQuestion.difficulty}
                     </span>
 
@@ -2488,12 +2581,12 @@ export default function App() {
                       </div>
                     )}
 
-                    <h2 className="text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white">
+                    <h2 className="text-lg sm:text-2xl lg:text-3xl font-bold leading-snug sm:leading-tight tracking-tight text-white break-words">
                       {currentQuestion.question}
                     </h2>
                   </div>
 
-                  <div className="grid gap-4 max-w-xl mx-auto w-full">
+                  <div className="grid gap-2.5 sm:gap-4 max-w-xl mx-auto w-full">
                     {currentQuestion.type === "mcq" &&
                       currentQuestion.options?.map((option, idx) => (
                         <motion.button
@@ -2521,7 +2614,7 @@ export default function App() {
                                   : {}
                           }
                           className={cn(
-                            "group relative p-5 bg-white/5 border border-white/10 text-left rounded-2xl transition-colors",
+                            "group relative px-4 py-3.5 sm:p-5 bg-white/5 border border-white/10 text-left rounded-2xl transition-colors",
                             "focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#050505]",
                             !showExplanation
                               ? "hover:border-emerald-500/50 hover:bg-emerald-500/5"
@@ -2647,7 +2740,7 @@ export default function App() {
                                   key={tag.label}
                                   title={tag.title}
                                   className={cn(
-                                    "px-2 py-1 rounded-lg border text-[10px] font-semibold",
+                                    "px-2 py-1 rounded-lg border text-xs font-semibold",
                                     tag.anchor === "student"
                                       ? "bg-sky-400/10 border-sky-400/30 text-sky-200"
                                       : "bg-white/5 border-white/10 text-slate-400",
@@ -2662,6 +2755,7 @@ export default function App() {
                       </div>
                     </div>
                     <motion.button
+                      ref={revealFeedback}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.4 }}
@@ -2785,15 +2879,18 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="bg-white/5 border border-white/10 rounded-[2.5rem] overflow-hidden flex flex-col max-h-[60vh]">
+                {/* On wide screens the leaderboard scrolls inside its box, beside
+                    the stats. On phones it simply grows with the page, so there's
+                    no scroll box inside a scrolling page. */}
+                <div className="bg-white/5 border border-white/10 rounded-[2.5rem] overflow-hidden flex flex-col lg:max-h-[60vh]">
                   <div className="p-6 border-b border-white/10 bg-white/5">
-                    <div className="grid grid-cols-12 gap-4 text-[10px] font-mono text-slate-500 uppercase tracking-widest">
+                    <div className="grid grid-cols-12 gap-4 text-xs font-mono text-slate-500 uppercase tracking-widest">
                       <div className="col-span-1">Pos</div>
                       <div className="col-span-7">Agent</div>
                       <div className="col-span-4 text-right">Combat Score</div>
                     </div>
                   </div>
-                  <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-3">
+                  <div className="flex-1 lg:overflow-y-auto custom-scrollbar p-6 space-y-3">
                     {(roomId
                       ? players
                       : [
@@ -2917,11 +3014,12 @@ export default function App() {
           to edge rather than stopping at the content column. */}
       {gameState === "login" && <AboutReadyForce />}
 
-      {/* No session exists on the landing page, so the session footer would
-          only ever read "SECURE"; the brand band above closes that page. */}
-      {gameState !== "login" && (
-        <footer className="py-6 text-center text-slate-700 text-[10px] font-mono uppercase tracking-[0.2em] border-t border-white/5">
-          SESSION ID: {roomId || "SECURE"} // ENCRYPTION: AES-256
+      {/* The session code, as a reference while in a session. (It used to
+          claim "ENCRYPTION: AES-256", which the app doesn't do — not a claim a
+          security course should make.) */}
+      {gameState !== "login" && roomId && (
+        <footer className="py-6 text-center text-slate-500 text-xs font-mono uppercase tracking-[0.2em] border-t border-white/5">
+          Session {roomId}
         </footer>
       )}
     </div>

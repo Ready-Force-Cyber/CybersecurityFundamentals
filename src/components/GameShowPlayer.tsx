@@ -54,12 +54,12 @@ export function GameShowPlayer({
       {/* Who am I, and whose turn is it */}
       <div className={cn("rounded-2xl border p-4 flex items-center justify-between gap-3", tc.bg, tc.border)}>
         <div className="min-w-0">
-          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Your team</p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Your team</p>
           <p className={cn("text-xl font-black truncate", tc.text)}>{myTeam?.name ?? "—"}</p>
           {playerName && <p className="text-xs text-slate-400 truncate">Playing as {playerName}</p>}
         </div>
         <div className="text-right shrink-0">
-          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Score</p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Score</p>
           <p className="text-2xl font-black font-mono text-white">{myTeam?.score ?? 0}</p>
         </div>
       </div>
@@ -88,7 +88,7 @@ export function GameShowPlayer({
             iWon ? "bg-amber-400/10 border-amber-400/40" : "bg-white/5 border-white/10",
           )}
         >
-          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Final</p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Final</p>
           <p className="text-2xl font-black text-white">
             {winners.length === 0
               ? "No points scored"
@@ -109,7 +109,7 @@ export function GameShowPlayer({
               {gameshow.spin?.label}
               {gameshow.doubleNext ? " ×2" : ""}
             </span>
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+            <span className="text-xs font-bold uppercase tracking-widest text-slate-500">
               {String(question.concept ?? "").replace(/_/g, " ")}
             </span>
           </div>

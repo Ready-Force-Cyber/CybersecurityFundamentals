@@ -187,6 +187,12 @@ api.post("/session/:code/join", async (c) => {
   return proxy(await callDO(roomStub(c.env, c.req.param("code").toUpperCase()), "join", body));
 });
 
+// A student leaves before the session starts; the Durable Object checks their token.
+api.post("/session/:code/leave", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as any);
+  return proxy(await callDO(roomStub(c.env, c.req.param("code").toUpperCase()), "leave", body));
+});
+
 api.post("/session/:code/settings", async (c) => {
   if (!(await isInstructor(c.env, c.req.header("Authorization")))) {
     return c.json({ error: "Instructor sign-in required." }, 401);

@@ -410,6 +410,22 @@ async function startServer() {
     res.json({ playerId: id, playerToken: token, teamId, room: publicRoom(room) });
   });
 
+  /**
+   * A student leaves before the session starts (they joined the wrong class),
+   * so they drop off the host's roster. Once it has started, their score and
+   * answers stay part of the session's record.
+   */
+  app.post("/api/session/:code/leave", (req, res) => {
+    const room = rooms.get(req.params.code.toUpperCase());
+    if (!room) return res.status(404).json({ error: "Session not found." });
+    const { playerId, playerToken } = req.body ?? {};
+    const player = room.players.get(playerId);
+    if (!player || player.token !== playerToken) return res.status(403).json({ error: "Invalid player." });
+    if (room.status !== "waiting") return res.status(409).json({ error: "The session has already started." });
+    room.players.delete(player.id);
+    res.json({ ok: true });
+  });
+
   // ---- Game show --------------------------------------------------------
   /** Host spins the wheel; hazards resolve at once, points put a question up. */
   app.post("/api/session/:code/spin", (req, res) => {

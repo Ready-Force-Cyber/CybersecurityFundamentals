@@ -406,6 +406,33 @@ describe("session lifecycle", () => {
     await fetch(`${BASE}/api/session/${code}`, { method: "DELETE", headers: authHeaders(token) });
   });
 
+  it("lets a student leave before the start, with their own token only", async () => {
+    const { token } = (await (await login("10.0.0.43")).json()) as { token: string };
+    const created: any = await (
+      await fetch(`${BASE}/api/session`, { method: "POST", headers: authHeaders(token), body: JSON.stringify({ questionCount: 5 }) })
+    ).json();
+    const join = async (name: string) =>
+      (await (
+        await fetch(`${BASE}/api/session/${created.code}/join`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        })
+      ).json()) as any;
+    const a = await join("Ana");
+    const leave = (playerToken: string) =>
+      fetch(`${BASE}/api/session/${created.code}/leave`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId: a.playerId, playerToken }),
+      });
+    expect((await leave("not-the-token")).status).toBe(403);
+    expect((await leave(a.playerToken)).status).toBe(200);
+    const room: any = await (await fetch(`${BASE}/api/session/${created.code}`)).json();
+    expect(room.players).toEqual([]);
+    await fetch(`${BASE}/api/session/${created.code}`, { method: "DELETE", headers: authHeaders(token) });
+  });
+
   it("returns 404 for a nonexistent session code", async () => {
     const getRes = await fetch(`${BASE}/api/session/ZZZZZZ`);
     expect(getRes.status).toBe(404);

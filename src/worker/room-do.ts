@@ -198,6 +198,16 @@ export class RoomDO {
         return json({ playerId: id, playerToken: token, teamId, room: publicRoom(r) });
       }
 
+      // A student leaves before the start (wrong class): off the roster.
+      case "leave": {
+        const p = r.players[body.playerId];
+        if (!p || p.token !== body.playerToken) return json({ error: "Invalid player." }, 403);
+        if (r.status !== "waiting") return json({ error: "The session has already started." }, 409);
+        delete r.players[p.id];
+        await this.save(r);
+        return json({ ok: true });
+      }
+
       case "settings": {
         if (r.status !== "waiting") {
           return json({ error: "Settings can only change before the session starts." }, 409);

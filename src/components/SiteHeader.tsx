@@ -36,7 +36,7 @@ export function SiteHeader({ onJoinClass, onPracticeSolo, actions }: SiteHeaderP
           <img src="/rfc-logo.svg" alt="" className="w-[90%] h-[90%]" />
         </span>
         <span className="min-w-0 leading-tight">
-          <span className="block text-[10px] sm:text-[11px] font-extrabold uppercase tracking-[0.18em] text-cyan-700 truncate">
+          <span className="block text-xs font-extrabold uppercase tracking-[0.1em] sm:tracking-[0.18em] text-cyan-700 truncate">
             Learn · Practice · Prove
           </span>
           <span className="block text-lg sm:text-xl font-extrabold tracking-tight text-slate-950 whitespace-nowrap">Ready Force Labs</span>

@@ -660,7 +660,7 @@ export function HomeHero({ onJoinClass, onPracticeSolo }: HomeHeroProps) {
         >
           <ChevronLeft className="w-5 h-5" aria-hidden="true" />
         </button>
-        <div className="flex items-center gap-2" role="group" aria-label="Choose a slide">
+        <div className="flex items-center" role="group" aria-label="Choose a slide">
           {SLIDES.map((s, i) => {
             const active = i === index;
             return (
@@ -669,11 +669,15 @@ export function HomeHero({ onJoinClass, onPracticeSolo }: HomeHeroProps) {
                 onClick={() => go(i)}
                 aria-label={`Slide ${i + 1}: ${s.label}`}
                 aria-current={active ? "true" : undefined}
-                className={cn(
-                  "relative h-2.5 rounded-full overflow-hidden transition-all focus:outline-none focus-visible:ring-4 focus-visible:ring-white/50",
-                  active ? "w-12 bg-white/30" : "w-2.5 bg-white/40 hover:bg-white/70",
-                )}
+                // The dot is small, but the button around it is a 24px tap target.
+                className="group h-6 min-w-6 px-[3px] flex items-center justify-center rounded-full focus:outline-none focus-visible:ring-4 focus-visible:ring-white/50"
               >
+                <span
+                  className={cn(
+                    "relative block h-2.5 rounded-full overflow-hidden transition-all",
+                    active ? "w-12 bg-white/30" : "w-2.5 bg-white/40 group-hover:bg-white/70",
+                  )}
+                >
                 {/* Progress toward the next slide; finishing it moves on */}
                 {active && (
                   <span
@@ -687,6 +691,7 @@ export function HomeHero({ onJoinClass, onPracticeSolo }: HomeHeroProps) {
                     onAnimationEnd={() => go(index + 1)}
                   />
                 )}
+                </span>
               </button>
             );
           })}

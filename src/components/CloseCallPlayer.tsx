@@ -101,19 +101,19 @@ export function CloseCallPlayer({ view, myId, players, finished, onGuess, onExit
       <div className="flex items-center justify-between gap-3">
         <div>
           <CloseCallMark className="text-2xl" />
-          <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 mt-1">
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400 mt-1">
             Round {Math.min(view.index + 1, view.total)} of {view.total}
           </p>
         </div>
         <div className="text-right">
-          <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">Your score</p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Your score</p>
           <p className="text-2xl font-black font-mono text-white tabular-nums">{(me?.score ?? 0).toLocaleString()}</p>
         </div>
       </div>
 
       {view.item && (
         <div className="rounded-3xl border border-white/10 bg-white/5 p-5 space-y-2">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-amber-300">{conceptLabel(view.item.concept)}</p>
+          <p className="text-xs font-bold uppercase tracking-widest text-amber-300">{conceptLabel(view.item.concept)}</p>
           <p className="text-xl font-bold leading-snug text-white">{view.item.prompt}</p>
         </div>
       )}
@@ -142,33 +142,52 @@ export function CloseCallPlayer({ view, myId, players, finished, onGuess, onExit
             <label htmlFor="cc-guess" className="block font-bold text-white">
               Your guess{view.item ? ` (${view.item.unit})` : ""}
             </label>
-            <input
-              ref={input}
-              id="cc-guess"
-              type="text"
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="Type a number"
-              value={digits === "" ? "" : fmt(Number(digits))}
-              onChange={(e) => {
-                const next = e.target.value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
-                if (next === "" || Number(next) <= MAX_GUESS) setDigits(next);
-                if (error) setError("");
-              }}
-              aria-invalid={error ? true : undefined}
-              aria-describedby="cc-guess-help"
-              className="w-full rounded-2xl bg-black/40 border border-white/15 px-5 py-4 text-3xl font-black font-mono text-white tabular-nums placeholder:text-slate-600 placeholder:text-xl placeholder:font-semibold focus:outline-none focus:ring-4 focus:ring-amber-400/40 focus:border-amber-400"
-            />
+            {/* The button sits beside the box, not below it: a phone keeps the
+                focused box in view above the keyboard, so the button stays
+                visible too (an iPhone number pad has no Enter key). */}
+            <div className="flex gap-2">
+              <input
+                ref={input}
+                id="cc-guess"
+                type="text"
+                inputMode="numeric"
+                enterKeyHint="done"
+                autoComplete="off"
+                placeholder="Your number"
+                value={digits === "" ? "" : fmt(Number(digits))}
+                onChange={(e) => {
+                  const next = e.target.value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+                  if (next === "" || Number(next) <= MAX_GUESS) setDigits(next);
+                  if (error) setError("");
+                }}
+                onFocus={(e) => {
+                  const box = e.currentTarget;
+                  window.setTimeout(
+                    () => box.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" }),
+                    300,
+                  );
+                }}
+                aria-invalid={error ? true : undefined}
+                aria-describedby="cc-guess-help"
+                className={cn(
+                  "flex-1 min-w-0 rounded-2xl bg-black/40 border border-white/15 px-4 py-3.5 font-black font-mono text-white tabular-nums",
+                  "placeholder:text-slate-500 placeholder:text-lg placeholder:font-semibold",
+                  "focus:outline-none focus:ring-4 focus:ring-amber-400/40 focus:border-amber-400",
+                  // Long numbers (1,000,000) shrink to stay visible beside the button.
+                  digits.length > 6 ? "text-lg sm:text-2xl" : "text-2xl sm:text-3xl",
+                )}
+              />
+              <button
+                type="submit"
+                disabled={busy}
+                className="shrink-0 px-5 rounded-2xl bg-amber-400 text-black text-base sm:text-lg font-black hover:bg-amber-300 disabled:opacity-50 transition-colors"
+              >
+                {busy ? "…" : lockedIn ? "UPDATE" : "LOCK IN"}
+              </button>
+            </div>
             <p id="cc-guess-help" role={error ? "alert" : undefined} className={cn("text-sm", error ? "text-rose-300 font-semibold" : "text-slate-400")}>
               {error || "Closest without going over wins. Go over and you get nothing!"}
             </p>
-            <button
-              type="submit"
-              disabled={busy}
-              className="w-full py-4 rounded-2xl bg-amber-400 text-black text-lg font-black hover:bg-amber-300 disabled:opacity-50 transition-colors"
-            >
-              {busy ? "Locking in…" : lockedIn ? "UPDATE MY GUESS" : "LOCK IT IN"}
-            </button>
           </form>
         ))}
 
@@ -185,7 +204,7 @@ export function CloseCallPlayer({ view, myId, players, finished, onGuess, onExit
               mine?.points ? "bg-emerald-500/10 border-emerald-400/40" : mine?.over ? "bg-rose-500/10 border-rose-400/30" : "bg-white/5 border-white/10",
             )}
           >
-            <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-slate-300">The answer is</p>
+            <p className="text-xs font-bold uppercase tracking-[0.25em] text-slate-300">The answer is</p>
             <p className="text-5xl font-black font-mono text-white tabular-nums">{fmt(view.result.answer)}</p>
             {mine ? (
               <>

@@ -740,3 +740,22 @@ describe("RoomDO — Close Call mode", () => {
     expect((await room.fetch(req("closecall-reveal", {}))).status).toBe(409);
   });
 });
+
+describe("RoomDO — leaving before the start", () => {
+  it("takes a student off the roster before the start, but not after", async () => {
+    const room = new RoomDO(fakeState());
+    await room.fetch(req("create", { code: "LV1", mode: "quiz", questions: CYBER_QUESTIONS }));
+    const a: any = await (await room.fetch(req("join", { name: "A" }))).json();
+    const b: any = await (await room.fetch(req("join", { name: "B" }))).json();
+
+    expect((await room.fetch(req("leave", { playerId: a.playerId, playerToken: "wrong" }))).status).toBe(403);
+    expect((await room.fetch(req("leave", { playerId: a.playerId, playerToken: a.playerToken }))).status).toBe(200);
+    let state: any = await (await room.fetch(req("state"))).json();
+    expect(state.players.map((p: any) => p.name)).toEqual(["B"]);
+
+    await room.fetch(req("start", { durationMinutes: 5 }));
+    expect((await room.fetch(req("leave", { playerId: b.playerId, playerToken: b.playerToken }))).status).toBe(409);
+    state = await (await room.fetch(req("state"))).json();
+    expect(state.players.map((p: any) => p.name)).toEqual(["B"]);
+  });
+});

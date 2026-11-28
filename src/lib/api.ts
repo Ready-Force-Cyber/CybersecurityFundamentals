@@ -184,6 +184,10 @@ export const api = {
   closeCallNext: (code: string): Promise<RoomState> =>
     req(`/api/session/${code}/closecall/next`, { method: "POST", body: "{}" }, true),
 
+  /** A student leaves before the session starts (e.g. they joined the wrong class). */
+  leaveSession: (code: string, playerId: string, playerToken: string): Promise<{ ok: true }> =>
+    req(`/api/session/${code}/leave`, { method: "POST", body: JSON.stringify({ playerId, playerToken }) }),
+
   listSessions: (): Promise<{ sessions: any[] }> => req("/api/sessions", {}, true),
 
   getRoom: (code: string): Promise<RoomState> => req(`/api/session/${code}`),

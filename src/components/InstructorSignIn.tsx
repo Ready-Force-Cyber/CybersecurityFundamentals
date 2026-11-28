@@ -56,17 +56,19 @@ export function InstructorSignIn({ password, onPasswordChange, onSubmit, isAuthe
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-controls="instructor-signin"
+        title="Instructor sign in"
         className={cn(
-          "inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border text-sm font-bold shadow-sm transition-colors focus:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300",
+          // A 44px lock button on phones, so the app name beside it fits;
+          // the full label from sm up.
+          "inline-flex items-center justify-center gap-2 w-11 h-11 sm:w-auto sm:h-auto sm:px-3.5 sm:py-2 rounded-xl border text-sm font-bold shadow-sm transition-colors focus:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300",
           open
             ? "bg-emerald-600 text-white border-emerald-600"
             : "bg-white text-slate-700 border-slate-200 hover:border-emerald-300 hover:text-emerald-700",
         )}
       >
         <Lock className="w-4 h-4" aria-hidden="true" />
-        <span className="sm:hidden">Instructors</span>
-        <span className="hidden sm:inline">Instructor sign in</span>
-        <ChevronDown className={cn("w-4 h-4 transition-transform", open && "rotate-180")} aria-hidden="true" />
+        <span className="sr-only sm:not-sr-only">Instructor sign in</span>
+        <ChevronDown className={cn("hidden sm:block w-4 h-4 transition-transform", open && "rotate-180")} aria-hidden="true" />
       </button>
 
       <AnimatePresence>

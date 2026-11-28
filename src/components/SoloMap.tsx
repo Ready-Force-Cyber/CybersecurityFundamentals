@@ -468,7 +468,9 @@ export function SoloMap({
               Skills map
             </h2>
             <p className="text-sm text-slate-500">
-              Pick a spot on the map to see what's there. Arrow keys move along the path.
+              Pick a spot on the map to see what's there.
+              {/* Only for keyboards: a phone or tablet has no arrow keys. */}
+              <span className="[@media(pointer:coarse)]:hidden"> Arrow keys move along the path.</span>
             </p>
           </div>
           <ul className="flex flex-wrap gap-3 text-xs font-semibold text-slate-600" aria-label="Map key">
